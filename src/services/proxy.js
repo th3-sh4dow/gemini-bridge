@@ -29,14 +29,18 @@ function logBody(label, obj) {
 // ---- Extract the API key the app is trying to use ----
 
 export function extractProviderKey(headers = {}) {
-  // Gemini-specific BYOK header (C1837x line 395, 460)
+  // ---- Gemini-specific BYOK key (C1837x lines 395, 460) ----
   const geminiKey = (headers['x-custom-gemini-key'] || '').trim();
-  if (geminiKey) return { key: geminiKey, provider: 'gemini' };
+  if (geminiKey) {
+    return { key: geminiKey, provider: 'gemini' };
+  }
 
-  // Generic provider headers (C1808e line 179-185)
+  // ---- Generic provider key (C1808e lines 179-185, 308-314, p084g6/f.java 527-533) ----
   const provider = (headers['x-provider'] || '').trim().toLowerCase();
   const providerKey = (headers['x-provider-api-key'] || '').trim();
-  if (providerKey) return { key: providerKey, provider };
+  if (providerKey) {
+    return { key: providerKey, provider: provider || 'gemini' };
+  }
 
   return { key: null, provider: null };
 }
@@ -91,20 +95,18 @@ export function detectModelFromHeaders(headers = {}) {
 function toUpstreamBody(provider, body) {
   if (provider === 'gemini' || !provider) {
     // Gemini expects { contents: [...] }
-    const contents = body.contents || body.candidates || body;
+    const contents = extractContents(body);
     return { contents };
   }
 
   // OpenAI/OpenRouter compatible: convert contents -> messages
-  const contents = body.contents || body.candidates || body;
-  const messages = Array.isArray(contents)
-    ? contents.map((c) => {
-        if (typeof c === 'string') return { role: 'user', content: c };
-        const role = c.role || c.Type || 'user';
-        const text = c.text || c.content?.parts?.[0]?.text || c.Reply || '';
-        return { role, content: text };
-      })
-    : [];
+  const contents = extractContents(body);
+  const messages = contents.map((c) => {
+    if (typeof c === 'string') return { role: 'user', content: c };
+    const role = c.role || c.Type || 'user';
+    const text = c.text || c.content?.parts?.[0]?.text || c.Reply || '';
+    return { role, content: text };
+  });
 
   const modelHint = body.model || '';
   return {
@@ -115,16 +117,40 @@ function toUpstreamBody(provider, body) {
   };
 }
 
+/** Return a normalized array of content items from the various shapes Panda uses. */
+function extractContents(body) {
+  if (Array.isArray(body)) return body;
+  if (body && typeof body === 'object') {
+    if (Array.isArray(body.contents)) return body.contents;
+    if (Array.isArray(body.candidates)) return body.candidates;
+    if (body.content && Array.isArray(body.content.parts)) return body.content.parts;
+    // single-turn shape the app sometimes sends
+    if (body.parts && Array.isArray(body.parts)) return body.parts.map((p) => ({
+      parts: Array.isArray(p) ? p : [{ text: p }],
+      role: 'user'
+    }));
+    if (body.Reply) return [{ parts: [{ text: body.Reply }], role: 'user' }];
+    if (body.text) return [{ parts: [{ text: body.text }], role: 'user' }];
+  }
+  return [];
+}
+
 // ---- Convert upstream response back to Panda's expected shape ----
 
 function toPandaShape(upstreamRes, provider, pathSuffix) {
   const data = upstreamRes.data;
 
+  // Always strip any noCredits the upstream might include.
+  // The app treats noCredits:true as "show paywall". We never want that.
+  const stripped = data && typeof data === 'object' ? { ...data } : data;
+  if (stripped && typeof stripped === 'object') {
+    delete stripped.noCredits;
+  }
+
   // Gemini native response
   if (data.candidates || data.usageMetadata) {
     const candidates = (data.candidates || []).map((c) => {
       const parts = (c.content && c.content.parts) || [];
-      const text = parts.map((p) => p.text || p).join('');
       return {
         content: {
           parts: parts.map((p) => ({ text: p.text || p })),
@@ -135,13 +161,13 @@ function toPandaShape(upstreamRes, provider, pathSuffix) {
       };
     });
 
-    return {
+    return Object.assign({
       candidates,
       audioContent: null,
       noCredits: false,            // <-- always false: no paywall
       promptFeedback: data.promptFeedback || null,
       usageMetadata: data.usageMetadata || null
-    };
+    }, stripped);
   }
 
   // OpenAI / OpenRouter style response
@@ -155,7 +181,7 @@ function toPandaShape(upstreamRes, provider, pathSuffix) {
       averageLogprobs: null
     }));
 
-    return {
+    return Object.assign({
       candidates,
       audioContent: null,
       noCredits: false,
@@ -165,17 +191,17 @@ function toPandaShape(upstreamRes, provider, pathSuffix) {
         candidatesTokenCount: data.usage?.completion_tokens || 0,
         totalTokenCount: data.usage?.total_tokens || 0
       }
-    };
+    }, stripped);
   }
 
-  // Fallback: just echo with noCredits flag forced off
-  return {
+  // Fallback: echo upstream shape but force noCredits false
+  const out = Object.assign({
     candidates: [],
     audioContent: null,
     noCredits: false,
-    promptFeedback: null,
-    ...data
-  };
+    promptFeedback: null
+  }, stripped || {});
+  return out;
 }
 
 // ---- Main proxy handler ----

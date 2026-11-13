@@ -1,13 +1,12 @@
 import express from 'express';
-import axios from 'axios';
-import { proxyGeminiRequest, detectModelFromHeaders, buildGeminiUrl } from '../services/proxy.js';
+import { proxyGeminiRequest } from '../services/proxy.js';
 
 const router = express.Router();
 
 // ---------------------------------------------------------------------------
-// Routes that the Panda app actually hits on api.heypanda.org
-// We only need to proxy the Gemini generateContent path for the core chat.
-// 모든 SSM マッスルと T5/C1837x が POST するパスをここで受ける。
+// Gemini LLM paths the app hits (Z5/C1837x, Z5/C1808e, p084g6/f)
+// These are the ones that matter for chat + paywall. Every Gemini response
+// is returned with noCredits:false so the app never shows the paywall.
 // ---------------------------------------------------------------------------
 
 // Main LLM response generation (C1837x -> f24204d)
@@ -26,7 +25,7 @@ router.post('/gemini/generateContent', async (req, res) => {
   }
 });
 
-// Memories generation (f24205e) — also proxied for completeness
+// Memories generation (f24205e)
 router.post('/gemini/generateMemories', async (req, res) => {
   try {
     const result = await proxyGeminiRequest(req, res, 'generateMemories');
@@ -40,7 +39,7 @@ router.post('/gemini/generateMemories', async (req, res) => {
   }
 });
 
-// Agent call endpoint (C1808e -> f24204e / agentCall)
+// Agent call endpoint (C1808e -> agentCall)
 router.post('/gemini/agentCall', async (req, res) => {
   try {
     const result = await proxyGeminiRequest(req, res, 'agentCall');
@@ -54,8 +53,11 @@ router.post('/gemini/agentCall', async (req, res) => {
   }
 });
 
-// LLM provider list (Y4.W) — return a static minimal set so the app doesn't
-// try to fetch from the real heypanda.org.
+// ---------------------------------------------------------------------------
+// Provider / key management paths the app hits (Y4.W, Y5.i)
+// ---------------------------------------------------------------------------
+
+// LLM provider list (Y4.W)
 router.get('/llm/providers', (req, res) => {
   res.json({
     providers: [
@@ -93,13 +95,11 @@ router.get('/llm/providers', (req, res) => {
   });
 });
 
-// Key inspection (Y4.W / inspect-key) — accept any key that looks valid,
-// return a minimal positive response so the app thinks the key is good.
+// Key inspection (Y4.W)
 router.post('/llm/inspect-key', (req, res) => {
   const body = req.body || {};
   const suppliedKey = (body.apiKey || '').trim();
 
-  // Basic prefix check (same logic as the app's local detection)
   const looksValid =
     suppliedKey.startsWith('AIza') ||
     suppliedKey.startsWith('sk-or-') ||
@@ -125,27 +125,22 @@ router.post('/llm/inspect-key', (req, res) => {
     });
   }
 
-  // Decide provider label from prefix
   let providerId = 'gemini';
   let displayName = 'Gemini';
   let recommendedModelId = 'gemini-2.0-flash';
-  let baseUrl = 'https://generativelanguage.googleapis.com';
 
   if (suppliedKey.startsWith('sk-or-')) {
     providerId = 'openrouter';
     displayName = 'OpenRouter';
     recommendedModelId = 'google/gemini-2.0-flash';
-    baseUrl = 'https://openrouter.ai/api/v1';
   } else if (suppliedKey.startsWith('sk-proj-') || suppliedKey.startsWith('sk-')) {
     providerId = 'openai';
     displayName = 'ChatGPT';
     recommendedModelId = 'gpt-4o-mini';
-    baseUrl = 'https://api.openai.com/v1';
   } else if (suppliedKey.startsWith('sk-ant-')) {
     providerId = 'anthropic';
     displayName = 'Claude';
     recommendedModelId = 'claude-3-5-haiku-20241015';
-    baseUrl = 'https://api.anthropic.com/v1';
   }
 
   res.json({
@@ -173,10 +168,80 @@ router.post('/llm/inspect-key', (req, res) => {
   });
 });
 
-// JEV proxy endpoint (Y5.i) — minimal passthrough so the app's key-storage
-// code doesn't blow up.
+// JEV proxy endpoint (Y5.i)
 router.post('/jev/systemone', (req, res) => {
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Safe stubs for other api.heypanda.org paths the app hits.
+// If you point the whole hostname at this bridge, these keep the app from
+// crashing on non-LLM features while Gemini LLM traffic goes through the
+// Gemini proxy above.
+// ---------------------------------------------------------------------------
+
+router.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+router.post('/chat/sync', (req, res) => {
+  // Z4/H path; return a minimal chat-sync style payload.
+  res.json({ ok: true, noCredits: false });
+});
+
+router.get('/tts/voices', (req, res) => {
+  // S4/Y path; return a minimal voices list.
+  res.json({ voices: [{ name: 'alloy', status: 'ok' }] });
+});
+
+router.post('/stt/transcribe', (req, res) => {
+  // P5/C0932n path; return a minimal transcript.
+  res.json({ text: '' });
+});
+
+router.post('/senses/stats', (req, res) => {
+  // A5/l path; return a minimal stats ack.
+  res.json({ ok: true });
+});
+
+router.post('/browserAgent/generateContent', (req, res) => {
+  // X4/S path; return a minimal browser-agent style payload.
+  res.json({ candidates: [], noCredits: false, promptFeedback: null });
+});
+
+router.post('/browserAgent/chatTurn', (req, res) => {
+  res.json({ candidates: [], noCredits: false, promptFeedback: null });
+});
+
+router.post('/sessions/:id/log', (req, res) => {
+  res.json({ ok: true });
+});
+
+router.get('/goals', (req, res) => {
+  res.json({ goals: [] });
+});
+
+router.get('/life', (req, res) => {
+  res.json({ life: [] });
+});
+
+router.get('/observations', (req, res) => {
+  res.json({ observations: [] });
+});
+
+router.post('/search/agent', (req, res) => {
+  res.json({ results: [], noCredits: false });
+});
+
+router.post('/training/v3/:path(*)', (req, res) => {
+  res.json({ ok: true });
+});
+
+// Catch-all for anything else on /v1 so the app doesn't get a 404 panic.
+router.all('/v1/*', (req, res) => {
+  res.status(200).json({ ok: true, noCredits: false });
+});
+
+router.all('*', (req, res) => {
+  res.status(200).json({ ok: true, noCredits: false });
 });
 
 export { router as bridgeRouter };
