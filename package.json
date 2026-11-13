@@ -1,0 +1,18 @@
+{
+  "name": "gemini-bridge",
+  "version": "1.0.0",
+  "description": "Thin proxy bridge: Panda app -> this server -> Google Gemini API. Injects noCredits:false.",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "capture": "bash scripts/capture.sh"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.5",
+    "cors": "^2.8.5"
+  }
+}

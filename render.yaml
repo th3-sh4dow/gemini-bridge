@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: gemini-bridge
+    env: node
+    buildCommand: cd gemini-bridge && npm install
+    startCommand: cd gemini-bridge && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BRIDGE_LOG
+        value: _minimal_
