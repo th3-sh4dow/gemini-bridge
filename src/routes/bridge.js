@@ -1,209 +1,140 @@
 import express from 'express';
-import { proxyGeminiRequest } from '../services/proxy.js';
+import { handleGenerateContent, UpstreamError } from '../services/proxy.js';
+import { buildProviderPresets, inspectKey } from '../services/inspect.js';
+import { voiceTurnHandler } from './voice.js';
 
 const router = express.Router();
 
 // ---------------------------------------------------------------------------
-// Gemini LLM paths the app hits (Z5/C1837x, Z5/C1808e, p084g6/f)
-// These are the ones that matter for chat + paywall. Every Gemini response
-// is returned with noCredits:false so the app never shows the paywall.
+// LLM paths the app calls. Every one of them accepts the user's own key
+// (Gemini, Claude, OpenAI, OpenRouter or a custom OpenAI-compatible endpoint)
+// and returns a Gemini-shaped reply with noCredits:false, so the app never
+// shows a paywall and never needs a subscription to work.
 // ---------------------------------------------------------------------------
 
-// Main LLM response generation (C1837x -> f24204d)
-router.post('/gemini/generateContent', async (req, res) => {
+/** Pick an HTTP status for a failed upstream call. */
+function bridgeStatus(err) {
+  const upstream = err?.upstreamStatus;
+  if (upstream === 401 || upstream === 403) return 401;
+  if (upstream === 429) return 429;
+  if (upstream === 400) return 400;
+  return 502;
+}
+
+/** Empty Gemini-shaped reply, always with noCredits:false. */
+function emptyReply(error) {
+  return {
+    candidates: [],
+    audioContent: null,
+    noCredits: false,
+    promptFeedback: null,
+    ...(error ? { error } : {})
+  };
+}
+
+async function llmRoute(req, res, label, pathSuffix) {
   try {
-    const result = await proxyGeminiRequest(req, res, 'generateContent');
+    const result = await handleGenerateContent(req, pathSuffix);
     return res.json(result);
   } catch (err) {
-    console.error('[bridge] /v1/gemini/generateContent error:', err?.message || err);
-    return res.status(502).json({
-      error: err?.message || 'Bridge error',
-      noCredits: false,
-      candidates: [],
-      promptFeedback: null
-    });
+    const message = err?.message || 'Bridge error';
+    console.error(`[bridge] /v1/${label} error:`, message);
+    return res.status(bridgeStatus(err)).json(emptyReply(message));
   }
-});
+}
 
-// Memories generation (f24205e)
-router.post('/gemini/generateMemories', async (req, res) => {
-  try {
-    const result = await proxyGeminiRequest(req, res, 'generateMemories');
-    return res.json(result);
-  } catch (err) {
-    console.error('[bridge] /v1/gemini/generateMemories error:', err?.message || err);
-    return res.status(502).json({
-      error: err?.message || 'Bridge error',
-      noCredits: false
-    });
-  }
-});
+// Main LLM response generation (Z5/x -> f24204d)
+router.post('/gemini/generateContent', (req, res) =>
+  llmRoute(req, res, 'gemini/generateContent', 'generateContent')
+);
 
-// Agent call endpoint (C1808e -> agentCall)
-router.post('/gemini/agentCall', async (req, res) => {
-  try {
-    const result = await proxyGeminiRequest(req, res, 'agentCall');
-    return res.json(result);
-  } catch (err) {
-    console.error('[bridge] /v1/gemini/agentCall error:', err?.message || err);
-    return res.status(502).json({
-      error: err?.message || 'Bridge error',
-      noCredits: false
-    });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Provider / key management paths the app hits (Y4.W, Y5.i)
-// ---------------------------------------------------------------------------
-
-// LLM provider list (Y4.W)
-router.get('/llm/providers', (req, res) => {
-  res.json({
-    providers: [
-      {
-        id: 'gemini',
-        displayName: 'Gemini',
-        tier: 2,
-        keyHint: 'AIza...',
-        setupUrl: 'https://aistudio.google.com/api-keys',
-        sdkProvider: 'google',
-        recommendedModelId: 'gemini-2.0-flash',
-        baseUrl: 'https://generativelanguage.googleapis.com'
-      },
-      {
-        id: 'openai',
-        displayName: 'ChatGPT',
-        tier: 2,
-        keyHint: 'sk-...',
-        setupUrl: 'https://platform.openai.com/api-keys',
-        sdkProvider: 'openai',
-        recommendedModelId: 'gpt-4o-mini',
-        baseUrl: 'https://api.openai.com/v1'
-      },
-      {
-        id: 'openrouter',
-        displayName: 'OpenRouter',
-        tier: 1,
-        keyHint: 'sk-or-...',
-        setupUrl: 'https://openrouter.ai/keys',
-        sdkProvider: 'openai-compatible',
-        recommendedModelId: 'google/gemini-2.0-flash',
-        baseUrl: 'https://openrouter.ai/api/v1'
-      }
-    ]
-  });
-});
-
-// Key inspection (Y4.W)
-router.post('/llm/inspect-key', (req, res) => {
+// Memories extraction (f24205e). The app only looks at whether this succeeded,
+// and it posts an empty body when there is nothing to extract.
+router.post('/gemini/generateMemories', (req, res) => {
   const body = req.body || {};
-  const suppliedKey = (body.apiKey || '').trim();
+  const hasContent =
+    (Array.isArray(body.contents) && body.contents.length > 0) ||
+    typeof body.text === 'string';
+  if (!hasContent) {
+    return res.json({ ok: true, noCredits: false, saved: false });
+  }
+  return llmRoute(req, res, 'gemini/generateMemories', 'generateMemories');
+});
 
-  const looksValid =
-    suppliedKey.startsWith('AIza') ||
-    suppliedKey.startsWith('sk-or-') ||
-    suppliedKey.startsWith('sk-proj-') ||
-    suppliedKey.startsWith('sk-') &&
-    !suppliedKey.startsWith('sk-ant-') ||
-    suppliedKey.startsWith('sk-ant-');
+// Agent tool-call turns (Z5/C1808e -> agentCall)
+router.post('/gemini/agentCall', (req, res) =>
+  llmRoute(req, res, 'gemini/agentCall', 'generateContent')
+);
 
-  if (!looksValid) {
-    return res.json({
+// Voice conversation turn, streamed as SSE (Z5/M0 -> Z5/N0).
+router.post('/voice/turn', voiceTurnHandler);
+
+// ---------------------------------------------------------------------------
+// Provider / key management (Y4/W, Y5/i)
+// ---------------------------------------------------------------------------
+
+// Provider dropdown. Matches com.blurr.voice.byok.ProviderPreset.
+router.get('/llm/providers', (req, res) => {
+  res.json({ providers: buildProviderPresets() });
+});
+
+// Key validation + model discovery. Matches InspectKeyResponse.
+router.post('/llm/inspect-key', async (req, res) => {
+  const body = req.body || {};
+  try {
+    const result = await inspectKey(
+      body.apiKey || body.key || '',
+      body.providerId || body.provider || req.headers['x-provider']
+    );
+    return res.json(result);
+  } catch (err) {
+    console.error('[bridge] /v1/llm/inspect-key error:', err?.message || err);
+    return res.status(500).json({
       providerId: null,
       displayName: null,
       valid: false,
       models: [],
       recommendedModelId: null,
-      setupUrl: 'https://aistudio.google.com/api-keys',
+      setupUrl: null,
       privacyPolicyUrl: null,
       privacyPolicyTitle: null,
       privacyPolicyBullets: [],
       privacyPolicySummary: null,
-      error: 'Unrecognized API key format',
-      message: 'We could not recognize this key. Try a Gemini, OpenAI, OpenRouter, or Anthropic key.'
+      error: 'inspect_failed',
+      message: 'Could not validate the key right now. Try again in a moment.'
     });
   }
-
-  let providerId = 'gemini';
-  let displayName = 'Gemini';
-  let recommendedModelId = 'gemini-2.0-flash';
-
-  if (suppliedKey.startsWith('sk-or-')) {
-    providerId = 'openrouter';
-    displayName = 'OpenRouter';
-    recommendedModelId = 'google/gemini-2.0-flash';
-  } else if (suppliedKey.startsWith('sk-proj-') || suppliedKey.startsWith('sk-')) {
-    providerId = 'openai';
-    displayName = 'ChatGPT';
-    recommendedModelId = 'gpt-4o-mini';
-  } else if (suppliedKey.startsWith('sk-ant-')) {
-    providerId = 'anthropic';
-    displayName = 'Claude';
-    recommendedModelId = 'claude-3-5-haiku-20241015';
-  }
-
-  res.json({
-    providerId,
-    displayName,
-    valid: true,
-    models: [
-      { id: recommendedModelId, name: recommendedModelId }
-    ],
-    recommendedModelId,
-    setupUrl:
-      providerId === 'gemini'
-        ? 'https://aistudio.google.com/api-keys'
-        : providerId === 'openai'
-          ? 'https://platform.openai.com/api-keys'
-          : providerId === 'openrouter'
-            ? 'https://openrouter.ai/keys'
-            : 'https://console.anthropic.com/settings/keys',
-    privacyPolicyUrl: null,
-    privacyPolicyTitle: null,
-    privacyPolicyBullets: [],
-    privacyPolicySummary: null,
-    error: null,
-    message: 'Key is valid'
-  });
 });
 
-// JEV proxy endpoint (Y5.i)
+// JEV proxy endpoint (Y5/i)
 router.post('/jev/systemone', (req, res) => {
   res.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------
-// Safe stubs for other api.heypanda.org paths the app hits.
-// If you point the whole hostname at this bridge, these keep the app from
-// crashing on non-LLM features while Gemini LLM traffic goes through the
-// Gemini proxy above.
+// Safe stubs for the remaining api.heypanda.org paths so non-LLM features
+// degrade quietly instead of crashing.
 // ---------------------------------------------------------------------------
 
 router.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 router.post('/chat/sync', (req, res) => {
-  // Z4/H path; return a minimal chat-sync style payload.
   res.json({ ok: true, noCredits: false });
 });
 
 router.get('/tts/voices', (req, res) => {
-  // S4/Y path; return a minimal voices list.
   res.json({ voices: [{ name: 'alloy', status: 'ok' }] });
 });
 
 router.post('/stt/transcribe', (req, res) => {
-  // P5/C0932n path; return a minimal transcript.
   res.json({ text: '' });
 });
 
 router.post('/senses/stats', (req, res) => {
-  // A5/l path; return a minimal stats ack.
   res.json({ ok: true });
 });
 
 router.post('/browserAgent/generateContent', (req, res) => {
-  // X4/S path; return a minimal browser-agent style payload.
   res.json({ candidates: [], noCredits: false, promptFeedback: null });
 });
 
@@ -235,11 +166,7 @@ router.post('/training/v3/:path(*)', (req, res) => {
   res.json({ ok: true });
 });
 
-// Catch-all for anything else on /v1 so the app doesn't get a 404 panic.
-router.all('/v1/*', (req, res) => {
-  res.status(200).json({ ok: true, noCredits: false });
-});
-
+// Catch-all so an unknown path never makes the app panic.
 router.all('*', (req, res) => {
   res.status(200).json({ ok: true, noCredits: false });
 });

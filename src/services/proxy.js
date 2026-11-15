@@ -1,281 +1,236 @@
 import axios from 'axios';
+import {
+  CUSTOM_PROVIDER,
+  detectProviderFromKey,
+  getProvider,
+  resolveBaseUrl,
+  resolveModel
+} from './providers.js';
+import {
+  ANTHROPIC_VERSION,
+  extractContents,
+  fromAnthropicResponse,
+  fromGeminiResponse,
+  fromOpenAIResponse,
+  toAnthropicRequest,
+  toOpenAIRequest
+} from './translate.js';
 
 /**
- * Core proxy logic.
+ * The one place that talks to model providers on the user's behalf.
  *
- * Panda app sends requests to api.heypanda.org with headers like:
- *   - x-custom-gemini-key  (Gemini BYOK key)
- *   - x-provider-api-key   (generic provider key)
- *   - x-provider           (e.g. "gemini", "openai", "openrouter")
- *   - x-provider-model     (model id)
- *   - x-provider-base-url  (optional custom base URL)
+ * The app sends its own key on every call; we forward it to whichever provider
+ * that key belongs to and hand the reply back in the Gemini shape the app
+ * parses. No key, no credits, no subscription gate lives here — the user pays
+ * their provider directly, we never sit in the billing path.
  *
- * We extract the user's key from those headers, call the real Gemini/OpenRouter
- * API directly, then return the same JSON shape but with noCredits: false
- * so the app never sees the paywall.
+ * Headers the app sends (see Z5/x, Z5/N0, Z5/C1808e, Y4/W, Y5/i):
+ *   x-custom-gemini-key   Gemini-only BYOK key
+ *   x-provider            provider id ("gemini" | "anthropic" | "openai" | "openrouter")
+ *   x-provider-api-key    the user's key for that provider
+ *   x-provider-model      model id
+ *   x-provider-base-url   optional custom endpoint (Ollama, Groq, gateway, ...)
  */
 
-const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const LOG = (process.env.BRIDGE_LOG || '_minimal_').toLowerCase();
+const REQUEST_TIMEOUT_MS = Number(process.env.BRIDGE_TIMEOUT_MS || 60000);
 
 function log(...args) {
   if (LOG === '_verbose_') console.log('[bridge]', ...args);
 }
 
 function logBody(label, obj) {
-  if (LOG === '_verbose_') console.log(`[bridge] ${label}:`, JSON.stringify(obj).slice(0, 1200));
+  if (LOG !== '_verbose_') return;
+  try {
+    console.log(`[bridge] ${label}:`, JSON.stringify(obj).slice(0, 1200));
+  } catch {
+    /* ignore unserializable */
+  }
 }
 
-// ---- Extract the API key the app is trying to use ----
-
-export function extractProviderKey(headers = {}) {
-  // ---- Gemini-specific BYOK key (C1837x lines 395, 460) ----
-  const geminiKey = (headers['x-custom-gemini-key'] || '').trim();
-  if (geminiKey) {
-    return { key: geminiKey, provider: 'gemini' };
+class UpstreamError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = 'UpstreamError';
+    this.upstreamStatus = status;
   }
-
-  // ---- Generic provider key (C1808e lines 179-185, 308-314, p084g6/f.java 527-533) ----
-  const provider = (headers['x-provider'] || '').trim().toLowerCase();
-  const providerKey = (headers['x-provider-api-key'] || '').trim();
-  if (providerKey) {
-    return { key: providerKey, provider: provider || 'gemini' };
-  }
-
-  return { key: null, provider: null };
 }
 
-// ---- Decide what upstream URL to hit ----
+/**
+ * Work out the key and the provider from the request headers.
+ * An explicit `x-provider` wins; otherwise we infer from the key's shape.
+ */
+export function resolveCredentials(headers = {}) {
+  const rawProvider = String(headers['x-provider'] || '').trim();
+  const providerKeyHeader = String(headers['x-provider-api-key'] || '').trim();
+  const geminiKeyHeader = String(headers['x-custom-gemini-key'] || '').trim();
+  const model = String(headers['x-provider-model'] || '').trim();
+  const baseUrl = String(headers['x-provider-base-url'] || '').trim();
 
-export function buildGeminiUrl(provider, model, pathSuffix) {
-  // Gemini:  https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
-  // OpenRouter/OpenAI-compatible: rely on x-provider-base-url if present,
-  // otherwise default to OpenRouter.
-  if (provider === 'gemini' || !provider) {
-    const base = process.env.GEMINI_BASE_URL || GEMINI_BASE;
-    const m = (model || 'gemini-2.0-flash').replace(/^gemini-/, 'gemini-');
-    if (pathSuffix === 'generateMemories') {
-      return `${base}/v1beta/models/${m}:generateContent`;
-    }
-    return `${base}/v1beta/models/${m}:${pathSuffix}`;
-  }
+  const apiKey = providerKeyHeader || geminiKeyHeader || '';
 
-  if (provider === 'openai') {
-    const base = 'https://api.openai.com/v1';
-    if (pathSuffix === 'generateMemories') {
-      return `${base}/chat/completions`;
-    }
-    return `${base}/chat/completions`;
-  }
+  let provider = getProvider(rawProvider);
+  if (!provider && apiKey) provider = detectProviderFromKey(apiKey);
+  if (!provider && providerKeyHeader && baseUrl) provider = CUSTOM_PROVIDER;
 
-  if (provider === 'openrouter') {
-    const base = 'https://openrouter.ai/api/v1';
-    if (pathSuffix === 'generateMemories') {
-      return `${base}/chat/completions`;
-    }
-    return `${base}/chat/completions`;
-  }
+  // Gemini's own header can only ever mean Gemini.
+  if (!rawProvider && geminiKeyHeader) provider = getProvider('gemini');
 
-  // fallback: generic OpenAI-compatible path
-  return 'https://openrouter.ai/api/v1/chat/completions';
-}
-
-// ---- Detect model from headers, with sane defaults ----
-
-export function detectModelFromHeaders(headers = {}) {
-  const fromHeader = (headers['x-provider-model'] || '').trim();
-  if (fromHeader) return fromHeader;
-
-  // If the request body already includes a model, prefer it
-  return 'gemini-2.0-flash';
-}
-
-// ---- Convert Panda's Gemini generateContent body to upstream shape ----
-
-function toUpstreamBody(provider, body) {
-  if (provider === 'gemini' || !provider) {
-    // Gemini expects { contents: [...] }
-    const contents = extractContents(body);
-    return { contents };
-  }
-
-  // OpenAI/OpenRouter compatible: convert contents -> messages
-  const contents = extractContents(body);
-  const messages = contents.map((c) => {
-    if (typeof c === 'string') return { role: 'user', content: c };
-    const role = c.role || c.Type || 'user';
-    const text = c.text || c.content?.parts?.[0]?.text || c.Reply || '';
-    return { role, content: text };
-  });
-
-  const modelHint = body.model || '';
   return {
-    model: modelHint || 'google/gemini-2.0-flash',
-    messages,
-    max_tokens: body.max_tokens || body.maxOutputTokens || 2048,
-    temperature: body.temperature ?? 0.7
+    provider,
+    apiKey,
+    model,
+    baseUrl,
+    usedByok: Boolean(apiKey)
   };
 }
 
-/** Return a normalized array of content items from the various shapes Panda uses. */
-function extractContents(body) {
-  if (Array.isArray(body)) return body;
-  if (body && typeof body === 'object') {
-    if (Array.isArray(body.contents)) return body.contents;
-    if (Array.isArray(body.candidates)) return body.candidates;
-    if (body.content && Array.isArray(body.content.parts)) return body.content.parts;
-    // single-turn shape the app sometimes sends
-    if (body.parts && Array.isArray(body.parts)) return body.parts.map((p) => ({
-      parts: Array.isArray(p) ? p : [{ text: p }],
-      role: 'user'
-    }));
-    if (body.Reply) return [{ parts: [{ text: body.Reply }], role: 'user' }];
-    if (body.text) return [{ parts: [{ text: body.text }], role: 'user' }];
-  }
-  return [];
+function upstreamErrorMessage(err, fallback) {
+  const data = err?.response?.data;
+  const message =
+    data?.error?.message ||
+    (typeof data?.error === 'string' ? data.error : null) ||
+    data?.message ||
+    err?.message ||
+    fallback;
+  return typeof message === 'string' ? message : JSON.stringify(message);
 }
 
-// ---- Convert upstream response back to Panda's expected shape ----
+/** Gemini native REST: key goes in the query string. */
+async function callGemini({ provider, apiKey, model, baseUrl }, body, pathSuffix) {
+  const root = resolveBaseUrl(provider, baseUrl);
+  const suffix = pathSuffix === 'generateMemories' ? 'generateContent' : pathSuffix;
+  const url = `${root}/v1beta/models/${encodeURIComponent(model)}:${suffix}?key=${encodeURIComponent(apiKey)}`;
 
-function toPandaShape(upstreamRes, provider, pathSuffix) {
-  const data = upstreamRes.data;
+  const contents = extractContents(body);
+  const payload = { ...body, contents };
+  delete payload.noCredits;
+  delete payload.model;
 
-  // Always strip any noCredits the upstream might include.
-  // The app treats noCredits:true as "show paywall". We never want that.
-  const stripped = data && typeof data === 'object' ? { ...data } : data;
-  if (stripped && typeof stripped === 'object') {
-    delete stripped.noCredits;
+  log('gemini ->', url.replace(/key=[^&]+/, 'key=***'));
+  const response = await axios.post(url, payload, {
+    headers: { 'Content-Type': 'application/json' },
+    timeout: REQUEST_TIMEOUT_MS
+  });
+  return fromGeminiResponse(response.data);
+}
+
+/** Anthropic Messages API: x-api-key header + required version header. */
+async function callAnthropic({ provider, apiKey, model, baseUrl }, body) {
+  const root = resolveBaseUrl(provider, baseUrl);
+  const url = `${root}/v1/messages`;
+  const payload = toAnthropicRequest(body, model);
+
+  log('anthropic ->', url, 'model:', model, 'msgs:', payload.messages.length);
+  const response = await axios.post(url, payload, {
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': ANTHROPIC_VERSION
+    },
+    timeout: REQUEST_TIMEOUT_MS
+  });
+  return fromAnthropicResponse(response.data);
+}
+
+/** OpenAI-compatible Chat Completions (OpenAI, OpenRouter, Groq, Ollama, ...). */
+async function callOpenAICompatible({ provider, apiKey, model, baseUrl }, body) {
+  const root = resolveBaseUrl(provider, baseUrl) || 'https://api.openai.com/v1';
+  const url = `${root}/chat/completions`;
+  const payload = toOpenAIRequest(body, model);
+
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${apiKey}`
+  };
+  // OpenRouter asks for identifying headers; harmless elsewhere.
+  if (provider?.id === 'openrouter') {
+    headers['HTTP-Referer'] = process.env.OPENROUTER_SITE_URL || 'https://github.com/';
+    headers['X-Title'] = process.env.OPENROUTER_APP_NAME || 'Panda BYOK';
   }
 
-  // Gemini native response
-  if (data.candidates || data.usageMetadata) {
-    const candidates = (data.candidates || []).map((c) => {
-      const parts = (c.content && c.content.parts) || [];
-      return {
-        content: {
-          parts: parts.map((p) => ({ text: p.text || p })),
-          role: c.content?.role || 'model'
-        },
-        finishReason: c.finishReason,
-        averageLogprobs: c.averageLogprobs
-      };
-    });
+  log('openai-compatible ->', url, 'provider:', provider?.id, 'model:', model);
+  const response = await axios.post(url, payload, {
+    headers,
+    timeout: REQUEST_TIMEOUT_MS
+  });
+  return fromOpenAIResponse(response.data);
+}
 
-    return Object.assign({
-      candidates,
-      audioContent: null,
-      noCredits: false,            // <-- always false: no paywall
-      promptFeedback: data.promptFeedback || null,
-      usageMetadata: data.usageMetadata || null
-    }, stripped);
-  }
+/**
+ * handleGenerateContent — the single entry point for every LLM call.
+ * Returns a Gemini-shaped object the app already knows how to parse.
+ */
+export async function handleGenerateContent(req, pathSuffix = 'generateContent') {
+  const started = Date.now();
+  const creds = resolveCredentials(req.headers);
+  const body = req.body || {};
 
-  // OpenAI / OpenRouter style response
-  if (data.choices) {
-    const candidates = data.choices.map((ch) => ({
-      content: {
-        parts: [{ text: ch.message?.content || '' }],
-        role: ch.message?.role || 'model'
-      },
-      finishReason: ch.finish_reason || 'stop',
-      averageLogprobs: null
-    }));
+  log('request', req.path, {
+    provider: creds.provider?.id || null,
+    byok: creds.usedByok,
+    model: creds.model || null
+  });
 
-    return Object.assign({
-      candidates,
+  if (!creds.provider) {
+    return {
+      candidates: [],
       audioContent: null,
       noCredits: false,
       promptFeedback: null,
-      usageMetadata: {
-        promptTokenCount: data.usage?.prompt_tokens || 0,
-        candidatesTokenCount: data.usage?.completion_tokens || 0,
-        totalTokenCount: data.usage?.total_tokens || 0
-      }
-    }, stripped);
+      error:
+        'No API key recognised. Add your Gemini, Claude, OpenAI or OpenRouter key in settings.'
+    };
   }
 
-  // Fallback: echo upstream shape but force noCredits false
-  const out = Object.assign({
-    candidates: [],
-    audioContent: null,
-    noCredits: false,
-    promptFeedback: null
-  }, stripped || {});
-  return out;
+  if (!creds.apiKey) {
+    return {
+      candidates: [],
+      audioContent: null,
+      noCredits: false,
+      promptFeedback: null,
+      error: `No ${creds.provider.displayName} API key found in the request.`
+    };
+  }
+
+  if (creds.provider.id === 'custom' && !creds.baseUrl) {
+    return {
+      candidates: [],
+      audioContent: null,
+      noCredits: false,
+      promptFeedback: null,
+      error: 'A custom endpoint needs a base URL.'
+    };
+  }
+
+  const model = resolveModel(creds.provider, creds.model);
+  const args = { ...creds, model };
+
+  try {
+    let result;
+    if (creds.provider.kind === 'anthropic') {
+      result = await callAnthropic(args, body);
+    } else if (creds.provider.kind === 'openai') {
+      result = await callOpenAICompatible(args, body);
+    } else {
+      result = await callGemini(args, body, pathSuffix);
+    }
+    log('done in', Date.now() - started, 'ms');
+    logBody('reply', result);
+    return result;
+  } catch (err) {
+    const message = upstreamErrorMessage(err, 'Upstream request failed');
+    const status = err?.response?.status;
+    log('upstream error', status, message);
+    // Rethrow so the route can pick a meaningful HTTP status, but keep the
+    // Gemini-shaped body so the app always understands the failure.
+    throw new UpstreamError(message, status);
+  }
 }
 
-// ---- Main proxy handler ----
-
-export async function proxyGeminiRequest(req, res, pathSuffix = 'generateContent') {
-  const startTime = Date.now();
-
-  const providerKey = extractProviderKey(req.headers);
-  log('request', req.path, 'providerKey?', !!providerKey.key, 'provider?', providerKey.provider);
-
-  const model = detectModelFromHeaders(req.headers);
-  const upstreamUrl = buildGeminiUrl(providerKey.provider, model, pathSuffix);
-  log('upstream url:', upstreamUrl);
-
-  // Forward the request body as-is for Gemini; convert for OpenAI-style
-  const pandaBody = req.body || {};
-  const upstreamBody = toUpstreamBody(providerKey.provider, pandaBody);
-  logBody('outbound body', upstreamBody);
-
-  const headersOut = {};
-
-  // Auth header depends on provider
-  if (providerKey.provider === 'gemini') {
-    // Gemini REST API: key in query string
-    const urlWithKey = `${upstreamUrl}?key=${encodeURIComponent(providerKey.key)}`;
-    headersOut['Content-Type'] = 'application/json';
-    log('using query-key auth for Gemini');
-    try {
-      const up = await axios.post(urlWithKey, upstreamBody, {
-        headers: headersOut,
-        timeout: 30000
-      });
-      log('upstream status:', up.status, 'ms:', Date.now() - startTime);
-      logBody('inbound body', up.data);
-      return toPandaShape(up, providerKey.provider, pathSuffix);
-    } catch (err) {
-      const msg = err?.response?.data?.error?.message || err?.message || 'Gemini upstream error';
-      log('upstream error:', msg);
-      // Re-throw so the route handler returns 502 with noCredits:false
-      const errObj = new Error(msg);
-      errObj.upstreamStatus = err?.response?.status;
-      throw errObj;
-    }
-  }
-
-  if (providerKey.provider === 'openai' || providerKey.provider === 'openrouter') {
-    headersOut['Authorization'] = `Bearer ${providerKey.key}`;
-    headersOut['Content-Type'] = 'application/json';
-    log('using Bearer auth for', providerKey.provider);
-    try {
-      const up = await axios.post(upstreamUrl, upstreamBody, {
-        headers: headersOut,
-        timeout: 30000
-      });
-      log('upstream status:', up.status, 'ms:', Date.now() - startTime);
-      logBody('inbound body', up.data);
-      return toPandaShape(up, providerKey.provider, pathSuffix);
-    } catch (err) {
-      const msg = err?.response?.data?.error?.message || err?.response?.data || err?.message || 'Upstream error';
-      log('upstream error:', msg);
-      const errObj = new Error(msg);
-      errObj.upstreamStatus = err?.response?.status;
-      throw errObj;
-    }
-  }
-
-  // No key at all — return a clean noCredits:false empty response so the
-  // app doesn't crash or show a paywall.
-  log('no provider key found; returning empty noCredits:false');
-  return {
-    candidates: [],
-    audioContent: null,
-    noCredits: false,
-    promptFeedback: null,
-    error: 'No API key supplied'
-  };
+/** Kept for the existing route imports. */
+export async function proxyGeminiRequest(req, _res, pathSuffix) {
+  return handleGenerateContent(req, pathSuffix);
 }
+
+export { UpstreamError };
