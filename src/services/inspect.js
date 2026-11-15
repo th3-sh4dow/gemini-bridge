@@ -135,9 +135,13 @@ async function listModels(provider, apiKey, baseUrl) {
     timeout: PROBE_TIMEOUT_MS
   });
   const raw = res.data?.data || res.data?.models || [];
+  // No allow-list: every chat-capable model the user's key can reach is
+  // offered, and anything that cannot hold a conversation is dropped.
+  const NON_CHAT =
+    /embed|whisper|tts|dall-?e|moderation|davinci|babbage|curie|(^|[-_/])ada([-_/.]|$)|image|sora|audio|realtime|transcrib|rerank/i;
   return raw
     .map((m) => ({ id: m.id || m.name, name: m.name || m.id }))
-    .filter((m) => m.id && /gpt|o1|o3|o4|claude|gemini|llama|mistral|qwen|deepseek|sonnet|haiku|opus/i.test(m.id));
+    .filter((m) => m.id && !NON_CHAT.test(m.id));
 }
 
 /** Anthropic has no public model list, so we spend one token to prove the key. */

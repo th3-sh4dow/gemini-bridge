@@ -37,13 +37,24 @@ export const PROVIDERS = {
     envBaseUrl: 'ANTHROPIC_BASE_URL',
     defaultModel: 'claude-haiku-4-5-20251001',
     prefixes: ['sk-ant-'],
+    // Anthropic has no public model-list endpoint, so this is the catalogue the
+    // client shows. Any other id the user types is still passed straight
+    // through, so this list is a convenience, not a limit.
     models: [
-      { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
-      { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5' },
       { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5' },
-      { id: 'claude-3-5-haiku-latest', name: 'Claude 3.5 Haiku' },
-      { id: 'claude-3-5-sonnet-latest', name: 'Claude 3.5 Sonnet' },
-      { id: 'claude-3-7-sonnet-latest', name: 'Claude 3.7 Sonnet' }
+      { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5' },
+      { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
+      { id: 'claude-opus-4-1-20250805', name: 'Claude Opus 4.1' },
+      { id: 'claude-opus-4-20250514', name: 'Claude Opus 4' },
+      { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4' },
+      { id: 'claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet' },
+      { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet (new)' },
+      { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku' },
+      { id: 'claude-3-opus-20240229', name: 'Claude 3 Opus' },
+      { id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku' },
+      { id: 'claude-3-5-sonnet-latest', name: 'Claude 3.5 Sonnet (latest)' },
+      { id: 'claude-3-5-haiku-latest', name: 'Claude 3.5 Haiku (latest)' },
+      { id: 'claude-3-7-sonnet-latest', name: 'Claude 3.7 Sonnet (latest)' }
     ]
   },
 

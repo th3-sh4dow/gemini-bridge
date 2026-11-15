@@ -91,7 +91,17 @@ function startUpstream() {
           });
         }
         if (req.method === 'GET' && req.url.endsWith('/models')) {
-          return json({ data: [{ id: 'gpt-4o-mini' }, { id: 'claude-sonnet-4-5-20250929' }] });
+          return json({
+            data: [
+              { id: 'gpt-4o-mini' },
+              { id: 'o3-mini' },
+              { id: 'llama-3.1-70b-instruct' },
+              { id: 'qwen2.5-72b-instruct' },
+              { id: 'text-embedding-3-small' },
+              { id: 'whisper-1' },
+              { id: 'dall-e-3' }
+            ]
+          });
         }
 
         // ---- anthropic ----
@@ -387,6 +397,32 @@ test('inspect-key discovers Gemini models and filters non-chat ones', async () =
   const ids = json.models.map((m) => m.id);
   assert.ok(ids.includes('gemini-3.1-flash-lite'));
   assert.ok(!ids.includes('text-embedding-004'), 'embedding model filtered out');
+});
+
+test('inspect-key offers every chat model, not a curated few', async () => {
+  const { json } = await post('/v1/llm/inspect-key', { apiKey: OPENAI_KEY });
+  assert.equal(json.valid, true);
+  const ids = json.models.map((m) => m.id);
+
+  // Everything conversational the key can reach is offered.
+  for (const id of ['gpt-4o-mini', 'o3-mini', 'llama-3.1-70b-instruct', 'qwen2.5-72b-instruct']) {
+    assert.ok(ids.includes(id), `${id} should be offered`);
+  }
+
+  // Only non-conversational models are dropped.
+  for (const id of ['text-embedding-3-small', 'whisper-1', 'dall-e-3']) {
+    assert.ok(!ids.includes(id), `${id} should be excluded`);
+  }
+
+  assert.ok(json.models.length >= 4);
+});
+
+test('inspect-key exposes a broad Claude catalogue', async () => {
+  const { json } = await post('/v1/llm/inspect-key', { apiKey: CLAUDE_KEY });
+  const ids = json.models.map((m) => m.id);
+  assert.ok(ids.length >= 10, `expected a broad Claude list, got ${ids.length}`);
+  assert.ok(ids.includes('claude-opus-4-5-20251101'));
+  assert.ok(ids.includes('claude-3-haiku-20240307'));
 });
 
 test('inspect-key rejects an unrecognised key shape', async () => {
