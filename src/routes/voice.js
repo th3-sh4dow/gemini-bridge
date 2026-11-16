@@ -28,11 +28,37 @@ import { handleGenerateContent } from '../services/proxy.js';
  */
 
 const VOICE_SYSTEM_PROMPT = [
-  'You are a concise, friendly voice assistant.',
-  'You are being spoken aloud, so reply in one to three short sentences of plain speech.',
-  'Never use markdown, bullet points, emoji, code blocks or lists.',
+  'You are Panda, an intelligent, helpful voice and phone automation AI assistant for Android.',
+  'You have full capability to control the user\'s phone and apps (such as YouTube, Spotify, WhatsApp, Settings, Browser, Swiggy, Uber, Maps, etc.) via background automation.',
+  'When the user asks you to perform an action or run a task (such as "Play lo-fi music", "Open YouTube", "Search for shoes", "Open settings"), acknowledge the action concisely in one short spoken sentence (e.g., "Playing lo-fi music on YouTube now." or "Opening Swiggy for you.").',
+  'For conversational questions or general chat, reply concisely and helpfully in one to two short sentences.',
+  'Never refuse device or app actions; never say you cannot control apps.',
+  'Never use markdown, bullet points, emoji, or code blocks.',
   'Answer the user directly and stop.'
 ].join(' ');
+
+export function isTaskIntent(text) {
+  if (!text || typeof text !== 'string') return false;
+  const clean = text.trim().toLowerCase()
+    .replace(/^(can you |could you |please |panda |hey panda |would you )\b/g, '')
+    .trim();
+
+  const actionPrefixes = [
+    'open', 'launch', 'start', 'play', 'search', 'find',
+    'call', 'text', 'send', 'message', 'navigate', 'go to',
+    'turn on', 'turn off', 'switch to', 'set', 'buy', 'order',
+    'install', 'uninstall', 'close', 'check', 'show', 'type', 'click', 'scroll'
+  ];
+
+  for (const prefix of actionPrefixes) {
+    if (clean.startsWith(prefix + ' ') || clean === prefix) return true;
+  }
+
+  if (/\b(on youtube|in youtube|on spotify|on google|on amazon|on swiggy|on zomato|on whatsapp|on maps)\b/i.test(clean)) return true;
+  if (/\b(alarm|timer|reminder|volume|bluetooth|wifi|settings|camera|screenshot)\b/i.test(clean)) return true;
+
+  return false;
+}
 
 function sse(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -120,12 +146,16 @@ export async function voiceTurnHandler(req, res) {
     // Speech first: this is what the app shows and speaks.
     sse(res, 'speech', { text: reply });
 
-    // Then the decision. "Continue" keeps the conversation open, matching a
-    // plain `reply` tool call in the chat path.
+    // Decide if this turn is an actionable phone task or a conversational reply.
+    const isTask = isTaskIntent(message);
+    const decisionType = isTask ? 'Task' : 'Reply';
+    const instruction = isTask ? message : '';
+
+    // Then the decision. When type is "Task", the app launches AgentService with the instruction.
     sse(res, 'decision', {
-      type: 'Reply',
+      type: decisionType,
       reply,
-      instruction: '',
+      instruction,
       shouldEnd: 'Continue',
       originalReply: reply
     });

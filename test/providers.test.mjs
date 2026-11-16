@@ -524,6 +524,18 @@ test('voice turn works with a Gemini key too', async () => {
   assert.equal(speech.data.text, 'Hello from Gemini.');
 });
 
+test('voice turn emits type: Task and carries instruction for action intents', async () => {
+  const { status, events } = await voiceTurn(
+    { message: 'Play lo-fi music on YouTube' },
+    { 'x-custom-gemini-key': GEMINI_KEY, 'x-provider-model': 'gemini-3.1-flash-lite' }
+  );
+  assert.equal(status, 200);
+  const decision = events.find((e) => e.event === 'decision');
+  assert.ok(decision, 'decision event emitted');
+  assert.equal(decision.data.type, 'Task');
+  assert.equal(decision.data.instruction, 'Play lo-fi music on YouTube');
+});
+
 test('an empty voice turn reports an error event instead of hanging', async () => {
   const { events } = await voiceTurn({ message: '   ' }, { 'x-provider-api-key': CLAUDE_KEY });
   const error = events.find((e) => e.event === 'error');
