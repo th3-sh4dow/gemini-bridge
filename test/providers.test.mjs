@@ -543,3 +543,19 @@ test('an empty voice turn reports an error event instead of hanging', async () =
   assert.match(error.data.error, /Empty voice turn/i);
   assert.ok(events.find((e) => e.event === 'done'));
 });
+
+test('agentCall transforms Gemini reply into AgentOutput with action array', async () => {
+  const { json } = await post(
+    '/v1/gemini/agentCall',
+    {
+      contents: [{ role: 'user', parts: [{ text: 'Open Settings' }] }]
+    },
+    { 'x-custom-gemini-key': GEMINI_KEY, 'x-provider-model': 'gemini-3.1-flash-lite' }
+  );
+  assert.ok(Array.isArray(json.action), 'action must be an array');
+  assert.ok(json.action.length > 0, 'action array must not be empty');
+  assert.ok('thinking' in json);
+  assert.ok('evaluationPreviousGoal' in json);
+  assert.ok('memory' in json);
+  assert.ok('nextGoal' in json);
+});

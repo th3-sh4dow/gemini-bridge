@@ -67,7 +67,7 @@ export function resolveCredentials(headers = {}) {
   const model = String(headers['x-provider-model'] || '').trim();
   const baseUrl = String(headers['x-provider-base-url'] || '').trim();
 
-  const apiKey = providerKeyHeader || geminiKeyHeader || '';
+  const apiKey = providerKeyHeader || geminiKeyHeader || process.env.GEMINI_API_KEY || '';
 
   let provider = getProvider(rawProvider);
   if (!provider && apiKey) provider = detectProviderFromKey(apiKey);

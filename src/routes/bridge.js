@@ -62,9 +62,75 @@ router.post('/gemini/generateMemories', (req, res) => {
 });
 
 // Agent tool-call turns (Z5/C1808e -> agentCall)
-router.post('/gemini/agentCall', (req, res) =>
-  llmRoute(req, res, 'gemini/agentCall', 'generateContent')
-);
+export function toAgentOutput(result) {
+  if (result && Array.isArray(result.action)) {
+    return result;
+  }
+
+  const parts = result?.candidates?.[0]?.content?.parts || [];
+  let thinking = null;
+  let evaluationPreviousGoal = null;
+  let memory = null;
+  let nextGoal = null;
+  const action = [];
+
+  for (const part of parts) {
+    if (part.functionCall) {
+      const name = part.functionCall.name;
+      const args = part.functionCall.args || {};
+
+      if (name === 'update_state') {
+        thinking = args.thinking || thinking;
+        evaluationPreviousGoal = args.evaluation_previous_goal || args.evaluationPreviousGoal || evaluationPreviousGoal;
+        memory = args.memory || memory;
+        nextGoal = args.next_goal || args.nextGoal || nextGoal;
+        action.push({ update_state: args });
+      } else {
+        action.push({ [name]: args });
+      }
+    } else if (part.text) {
+      if (!thinking) thinking = part.text;
+    }
+  }
+
+  if (action.length === 0) {
+    action.push({
+      done: {
+        success: true,
+        text: thinking || 'Done'
+      }
+    });
+  }
+
+  return {
+    thinking: thinking || null,
+    evaluationPreviousGoal: evaluationPreviousGoal || null,
+    memory: memory || null,
+    nextGoal: nextGoal || null,
+    audioContent: null,
+    action
+  };
+}
+
+router.post('/gemini/agentCall', async (req, res) => {
+  try {
+    const result = await handleGenerateContent(req, 'generateContent');
+    return res.json(toAgentOutput(result));
+  } catch (err) {
+    const message = err?.message || 'Bridge error';
+    console.error('[bridge] /v1/gemini/agentCall error:', message);
+    return res.status(bridgeStatus(err)).json({
+      thinking: null,
+      evaluationPreviousGoal: null,
+      memory: null,
+      nextGoal: null,
+      audioContent: null,
+      action: [
+        { done: { success: false, text: message } }
+      ]
+    });
+  }
+});
 
 // Voice conversation turn, streamed as SSE (Z5/M0 -> Z5/N0).
 router.post('/voice/turn', voiceTurnHandler);
@@ -135,11 +201,17 @@ router.post('/senses/stats', (req, res) => {
 });
 
 router.post('/browserAgent/generateContent', (req, res) => {
-  res.json({ candidates: [], noCredits: false, promptFeedback: null });
+  if (!req.headers['x-custom-gemini-key'] && !req.headers['x-provider-api-key']) {
+    req.headers['x-custom-gemini-key'] = process.env.GEMINI_API_KEY || 'AIzaSyCDKUoyXSSfgiRfj70bAtwCZZyIVc0q3a4';
+  }
+  return llmRoute(req, res, 'browserAgent/generateContent', 'generateContent');
 });
 
 router.post('/browserAgent/chatTurn', (req, res) => {
-  res.json({ candidates: [], noCredits: false, promptFeedback: null });
+  if (!req.headers['x-custom-gemini-key'] && !req.headers['x-provider-api-key']) {
+    req.headers['x-custom-gemini-key'] = process.env.GEMINI_API_KEY || 'AIzaSyCDKUoyXSSfgiRfj70bAtwCZZyIVc0q3a4';
+  }
+  return llmRoute(req, res, 'browserAgent/chatTurn', 'generateContent');
 });
 
 router.post('/sessions/:id/log', (req, res) => {
