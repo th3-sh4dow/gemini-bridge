@@ -107,6 +107,24 @@ async function callGemini({ provider, apiKey, model, baseUrl }, body, pathSuffix
   delete payload.noCredits;
   delete payload.model;
 
+  // Sanitize tool_config for Gemini REST API (Gemini v1beta accepts ANY, AUTO, NONE — not REQUIRED)
+  for (const tcKey of ['tool_config', 'toolConfig']) {
+    const tc = payload[tcKey];
+    if (tc && typeof tc === 'object') {
+      for (const fccKey of ['function_calling_config', 'functionCallingConfig']) {
+        const fcc = tc[fccKey];
+        if (fcc && typeof fcc === 'object' && fcc.mode) {
+          const m = String(fcc.mode).toUpperCase();
+          if (m === 'REQUIRED') {
+            fcc.mode = 'ANY';
+          } else if (['ANY', 'AUTO', 'NONE'].includes(m)) {
+            fcc.mode = m;
+          }
+        }
+      }
+    }
+  }
+
   log('gemini ->', url.replace(/key=[^&]+/, 'key=***'));
   const response = await axios.post(url, payload, {
     headers: { 'Content-Type': 'application/json' },

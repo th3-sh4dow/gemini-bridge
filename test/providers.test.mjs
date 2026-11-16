@@ -559,3 +559,18 @@ test('agentCall transforms Gemini reply into AgentOutput with action array', asy
   assert.ok('memory' in json);
   assert.ok('nextGoal' in json);
 });
+
+test('browserAgent/generateContent converts REQUIRED mode to ANY', async () => {
+  const { status, json } = await post(
+    '/v1/browserAgent/generateContent',
+    {
+      contents: [{ role: 'user', parts: [{ text: 'Open Settings' }] }],
+      tools: [{ functionDeclarations: [{ name: 'open_app', description: 'test' }] }],
+      tool_config: { function_calling_config: { mode: 'REQUIRED' } }
+    },
+    { 'x-custom-gemini-key': GEMINI_KEY, 'x-provider-model': 'gemini-3.1-flash-lite' }
+  );
+  assert.equal(status, 200);
+  assert.ok(Array.isArray(json.candidates));
+  assert.equal(json.noCredits, false);
+});

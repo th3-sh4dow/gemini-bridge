@@ -192,7 +192,16 @@ export function toOpenAIRequest(body, model) {
   const tools = toOpenAITools(extractFunctionDeclarations(body));
   if (tools) {
     out.tools = tools;
-    out.tool_choice = 'auto';
+    const tc = body?.tool_config || body?.toolConfig;
+    const fcc = tc?.function_calling_config || tc?.functionCallingConfig;
+    const mode = String(fcc?.mode || '').toUpperCase();
+    if (mode === 'REQUIRED' || mode === 'ANY') {
+      out.tool_choice = 'required';
+    } else if (mode === 'NONE') {
+      out.tool_choice = 'none';
+    } else {
+      out.tool_choice = 'auto';
+    }
   }
   return out;
 }
@@ -261,7 +270,17 @@ export function toAnthropicRequest(body, model) {
   if (system) out.system = system;
 
   const tools = toAnthropicTools(extractFunctionDeclarations(body));
-  if (tools) out.tools = tools;
+  if (tools) {
+    out.tools = tools;
+    const tc = body?.tool_config || body?.toolConfig;
+    const fcc = tc?.function_calling_config || tc?.functionCallingConfig;
+    const mode = String(fcc?.mode || '').toUpperCase();
+    if (mode === 'REQUIRED' || mode === 'ANY') {
+      out.tool_choice = { type: 'any' };
+    } else if (mode === 'AUTO') {
+      out.tool_choice = { type: 'auto' };
+    }
+  }
 
   return out;
 }
