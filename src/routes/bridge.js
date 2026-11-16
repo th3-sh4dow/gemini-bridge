@@ -202,14 +202,14 @@ router.post('/senses/stats', (req, res) => {
 
 router.post('/browserAgent/generateContent', (req, res) => {
   if (!req.headers['x-custom-gemini-key'] && !req.headers['x-provider-api-key']) {
-    req.headers['x-custom-gemini-key'] = process.env.GEMINI_API_KEY || 'AIzaSyCDKUoyXSSfgiRfj70bAtwCZZyIVc0q3a4';
+    req.headers['x-custom-gemini-key'] = process.env.GEMINI_API_KEY || '';
   }
   return llmRoute(req, res, 'browserAgent/generateContent', 'generateContent');
 });
 
 router.post('/browserAgent/chatTurn', (req, res) => {
   if (!req.headers['x-custom-gemini-key'] && !req.headers['x-provider-api-key']) {
-    req.headers['x-custom-gemini-key'] = process.env.GEMINI_API_KEY || 'AIzaSyCDKUoyXSSfgiRfj70bAtwCZZyIVc0q3a4';
+    req.headers['x-custom-gemini-key'] = process.env.GEMINI_API_KEY || '';
   }
   return llmRoute(req, res, 'browserAgent/chatTurn', 'generateContent');
 });
