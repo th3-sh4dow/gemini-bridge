@@ -11,8 +11,16 @@ const router = express.Router();
 export const activeKeyCache = {
   apiKey: process.env.GEMINI_API_KEY || '',
   provider: 'gemini',
-  model: 'gemini-2.5-flash'
+  model: 'gemini-3.1-flash-lite'
 };
+
+export function withActiveKey(req) {
+  if (!req.headers['x-custom-gemini-key'] && !req.headers['x-provider-api-key'] && activeKeyCache.apiKey) {
+    req.headers['x-provider-api-key'] = activeKeyCache.apiKey;
+    req.headers['x-provider'] = req.headers['x-provider'] || activeKeyCache.provider;
+    req.headers['x-provider-model'] = req.headers['x-provider-model'] || activeKeyCache.model;
+  }
+}
 
 // Middleware: capture any API key provided by the client
 router.use((req, res, next) => {
@@ -135,6 +143,7 @@ export function toAgentOutput(result) {
 }
 
 router.post('/gemini/agentCall', async (req, res) => {
+  withActiveKey(req);
   try {
     const result = await handleGenerateContent(req, 'generateContent');
     return res.json(toAgentOutput(result));
@@ -233,20 +242,12 @@ router.post('/senses/stats', (req, res) => {
 });
 
 router.post('/browserAgent/generateContent', (req, res) => {
-  if (!req.headers['x-custom-gemini-key'] && !req.headers['x-provider-api-key']) {
-    req.headers['x-provider-api-key'] = activeKeyCache.apiKey;
-    req.headers['x-provider'] = req.headers['x-provider'] || activeKeyCache.provider;
-    req.headers['x-provider-model'] = req.headers['x-provider-model'] || activeKeyCache.model;
-  }
+  withActiveKey(req);
   return llmRoute(req, res, 'browserAgent/generateContent', 'generateContent');
 });
 
 router.post('/browserAgent/chatTurn', (req, res) => {
-  if (!req.headers['x-custom-gemini-key'] && !req.headers['x-provider-api-key']) {
-    req.headers['x-provider-api-key'] = activeKeyCache.apiKey;
-    req.headers['x-provider'] = req.headers['x-provider'] || activeKeyCache.provider;
-    req.headers['x-provider-model'] = req.headers['x-provider-model'] || activeKeyCache.model;
-  }
+  withActiveKey(req);
   return llmRoute(req, res, 'browserAgent/chatTurn', 'generateContent');
 });
 

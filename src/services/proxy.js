@@ -100,7 +100,10 @@ function upstreamErrorMessage(err, fallback) {
 async function callGemini({ provider, apiKey, model, baseUrl }, body, pathSuffix) {
   const root = resolveBaseUrl(provider, baseUrl);
   const suffix = pathSuffix === 'generateMemories' ? 'generateContent' : pathSuffix;
-  const url = `${root}/v1beta/models/${encodeURIComponent(model)}:${suffix}?key=${encodeURIComponent(apiKey)}`;
+  let targetModel = model;
+  if (!targetModel || targetModel.startsWith('gemini-2.') || targetModel.startsWith('gemini-1.') || targetModel === 'gemini-3.0-flash') {
+    targetModel = 'gemini-3.1-flash-lite';
+  }
 
   const contents = extractContents(body);
   const payload = { ...body, contents };
@@ -125,12 +128,27 @@ async function callGemini({ provider, apiKey, model, baseUrl }, body, pathSuffix
     }
   }
 
-  log('gemini ->', url.replace(/key=[^&]+/, 'key=***'));
-  const response = await axios.post(url, payload, {
-    headers: { 'Content-Type': 'application/json' },
-    timeout: REQUEST_TIMEOUT_MS
-  });
-  return fromGeminiResponse(response.data);
+  const makeUrl = (m) => `${root}/v1beta/models/${encodeURIComponent(m)}:${suffix}?key=${encodeURIComponent(apiKey)}`;
+
+  log('gemini ->', makeUrl(targetModel).replace(/key=[^&]+/, 'key=***'));
+  try {
+    const response = await axios.post(makeUrl(targetModel), payload, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: REQUEST_TIMEOUT_MS
+    });
+    return fromGeminiResponse(response.data);
+  } catch (err) {
+    const msg = err?.response?.data?.error?.message || err?.message || '';
+    if (targetModel !== 'gemini-3.1-flash-lite' && (msg.includes('no longer available') || msg.includes('not found') || err?.response?.status === 404)) {
+      log('gemini fallback to gemini-3.1-flash-lite');
+      const response = await axios.post(makeUrl('gemini-3.1-flash-lite'), payload, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: REQUEST_TIMEOUT_MS
+      });
+      return fromGeminiResponse(response.data);
+    }
+    throw err;
+  }
 }
 
 /** Anthropic Messages API: x-api-key header + required version header. */

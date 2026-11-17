@@ -142,6 +142,11 @@ export function detectProviderFromKey(apiKey) {
 /** Model to use: explicit client choice, else the provider's default. */
 export function resolveModel(provider, explicitModel) {
   const model = String(explicitModel || '').trim();
+  if (provider?.id === 'gemini') {
+    if (!model || model.startsWith('gemini-2.') || model.startsWith('gemini-1.') || model === 'gemini-3.0-flash') {
+      return 'gemini-3.1-flash-lite';
+    }
+  }
   if (model) return model;
   return provider?.defaultModel || 'gemini-3.1-flash-lite';
 }
