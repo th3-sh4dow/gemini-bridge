@@ -6,6 +6,28 @@ import { voiceTurnHandler } from './voice.js';
 const router = express.Router();
 
 // ---------------------------------------------------------------------------
+// In-memory cache for user credentials across all endpoints
+// ---------------------------------------------------------------------------
+export const activeKeyCache = {
+  apiKey: process.env.GEMINI_API_KEY || '',
+  provider: 'gemini',
+  model: 'gemini-2.5-flash'
+};
+
+// Middleware: capture any API key provided by the client
+router.use((req, res, next) => {
+  const geminiKey = req.headers['x-custom-gemini-key'];
+  const providerKey = req.headers['x-provider-api-key'];
+  const key = providerKey || geminiKey;
+  if (key && typeof key === 'string' && key.trim()) {
+    activeKeyCache.apiKey = key.trim();
+    if (req.headers['x-provider']) activeKeyCache.provider = req.headers['x-provider'];
+    if (req.headers['x-provider-model']) activeKeyCache.model = req.headers['x-provider-model'];
+  }
+  next();
+});
+
+// ---------------------------------------------------------------------------
 // LLM paths the app calls. Every one of them accepts the user's own key
 // (Gemini, Claude, OpenAI, OpenRouter or a custom OpenAI-compatible endpoint)
 // and returns a Gemini-shaped reply with noCredits:false, so the app never
@@ -147,11 +169,21 @@ router.get('/llm/providers', (req, res) => {
 // Key validation + model discovery. Matches InspectKeyResponse.
 router.post('/llm/inspect-key', async (req, res) => {
   const body = req.body || {};
+  const rawKey = body.apiKey || body.key || '';
+  if (rawKey && typeof rawKey === 'string' && rawKey.trim()) {
+    activeKeyCache.apiKey = rawKey.trim();
+    if (body.providerId || body.provider) {
+      activeKeyCache.provider = body.providerId || body.provider;
+    }
+  }
   try {
     const result = await inspectKey(
-      body.apiKey || body.key || '',
+      rawKey,
       body.providerId || body.provider || req.headers['x-provider']
     );
+    if (result && result.valid && result.recommendedModelId) {
+      activeKeyCache.model = result.recommendedModelId;
+    }
     return res.json(result);
   } catch (err) {
     console.error('[bridge] /v1/llm/inspect-key error:', err?.message || err);
@@ -202,14 +234,18 @@ router.post('/senses/stats', (req, res) => {
 
 router.post('/browserAgent/generateContent', (req, res) => {
   if (!req.headers['x-custom-gemini-key'] && !req.headers['x-provider-api-key']) {
-    req.headers['x-custom-gemini-key'] = process.env.GEMINI_API_KEY || '';
+    req.headers['x-provider-api-key'] = activeKeyCache.apiKey;
+    req.headers['x-provider'] = req.headers['x-provider'] || activeKeyCache.provider;
+    req.headers['x-provider-model'] = req.headers['x-provider-model'] || activeKeyCache.model;
   }
   return llmRoute(req, res, 'browserAgent/generateContent', 'generateContent');
 });
 
 router.post('/browserAgent/chatTurn', (req, res) => {
   if (!req.headers['x-custom-gemini-key'] && !req.headers['x-provider-api-key']) {
-    req.headers['x-custom-gemini-key'] = process.env.GEMINI_API_KEY || '';
+    req.headers['x-provider-api-key'] = activeKeyCache.apiKey;
+    req.headers['x-provider'] = req.headers['x-provider'] || activeKeyCache.provider;
+    req.headers['x-provider-model'] = req.headers['x-provider-model'] || activeKeyCache.model;
   }
   return llmRoute(req, res, 'browserAgent/chatTurn', 'generateContent');
 });
