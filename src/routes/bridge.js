@@ -2,25 +2,11 @@ import express from 'express';
 import { handleGenerateContent, UpstreamError } from '../services/proxy.js';
 import { buildProviderPresets, inspectKey } from '../services/inspect.js';
 import { voiceTurnHandler } from './voice.js';
+import { activeKeyCache, saveActiveKey, withActiveKey } from '../services/activeKeyStore.js';
 
 const router = express.Router();
 
-// ---------------------------------------------------------------------------
-// In-memory cache for user credentials across all endpoints
-// ---------------------------------------------------------------------------
-export const activeKeyCache = {
-  apiKey: process.env.GEMINI_API_KEY || '',
-  provider: 'gemini',
-  model: 'gemini-3.1-flash-lite'
-};
-
-export function withActiveKey(req) {
-  if (!req.headers['x-custom-gemini-key'] && !req.headers['x-provider-api-key'] && activeKeyCache.apiKey) {
-    req.headers['x-provider-api-key'] = activeKeyCache.apiKey;
-    req.headers['x-provider'] = req.headers['x-provider'] || activeKeyCache.provider;
-    req.headers['x-provider-model'] = req.headers['x-provider-model'] || activeKeyCache.model;
-  }
-}
+export { activeKeyCache, withActiveKey };
 
 // Middleware: capture any API key provided by the client
 router.use((req, res, next) => {
@@ -28,9 +14,11 @@ router.use((req, res, next) => {
   const providerKey = req.headers['x-provider-api-key'];
   const key = providerKey || geminiKey;
   if (key && typeof key === 'string' && key.trim()) {
-    activeKeyCache.apiKey = key.trim();
-    if (req.headers['x-provider']) activeKeyCache.provider = req.headers['x-provider'];
-    if (req.headers['x-provider-model']) activeKeyCache.model = req.headers['x-provider-model'];
+    saveActiveKey(
+      key.trim(),
+      req.headers['x-provider'] || activeKeyCache.provider,
+      req.headers['x-provider-model'] || activeKeyCache.model
+    );
   }
   next();
 });
@@ -88,6 +76,7 @@ router.post('/gemini/generateMemories', (req, res) => {
   if (!hasContent) {
     return res.json({ ok: true, noCredits: false, saved: false });
   }
+  withActiveKey(req);
   return llmRoute(req, res, 'gemini/generateMemories', 'generateMemories');
 });
 
@@ -180,10 +169,11 @@ router.post('/llm/inspect-key', async (req, res) => {
   const body = req.body || {};
   const rawKey = body.apiKey || body.key || '';
   if (rawKey && typeof rawKey === 'string' && rawKey.trim()) {
-    activeKeyCache.apiKey = rawKey.trim();
-    if (body.providerId || body.provider) {
-      activeKeyCache.provider = body.providerId || body.provider;
-    }
+    saveActiveKey(
+      rawKey.trim(),
+      body.providerId || body.provider || activeKeyCache.provider,
+      activeKeyCache.model
+    );
   }
   try {
     const result = await inspectKey(
@@ -191,7 +181,7 @@ router.post('/llm/inspect-key', async (req, res) => {
       body.providerId || body.provider || req.headers['x-provider']
     );
     if (result && result.valid && result.recommendedModelId) {
-      activeKeyCache.model = result.recommendedModelId;
+      saveActiveKey(activeKeyCache.apiKey, activeKeyCache.provider, result.recommendedModelId);
     }
     return res.json(result);
   } catch (err) {
@@ -219,8 +209,242 @@ router.post('/jev/systemone', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Safe stubs for the remaining api.heypanda.org paths so non-LLM features
-// degrade quietly instead of crashing.
+// Freemium / Subscription / Account Management
+// Always return subscribed pro+byok status so all features unlock
+// ---------------------------------------------------------------------------
+
+router.get('/user', (req, res) => {
+  res.json({
+    plan: 'pro+byok',
+    isDeleted: false,
+    totalTasksFree: 0,
+    enforcedPlan: 'byok'
+  });
+});
+
+router.post('/user/preferences', (req, res) => {
+  res.json({ success: true, ok: true });
+});
+
+router.post('/user/permissions', (req, res) => {
+  res.json({ success: true, ok: true });
+});
+
+router.post('/user/downgrade', (req, res) => {
+  res.json({ success: true, ok: true });
+});
+
+router.post('/user/upgrade', (req, res) => {
+  res.json({ success: true, ok: true });
+});
+
+router.post('/user/delete', (req, res) => {
+  res.json({ success: true, ok: true });
+});
+
+router.get('/user/handle', (req, res) => {
+  res.json({ name: 'Panda User', handle: '@user' });
+});
+
+router.post('/user/handle', (req, res) => {
+  res.json({ success: true, ok: true });
+});
+
+router.post('/user/pandaBriefingStatus', (req, res) => {
+  res.json({ success: true, ok: true });
+});
+
+router.post('/user/pandaBriefingFeedback', (req, res) => {
+  res.json({ success: true, ok: true });
+});
+
+router.post('/user/pandaBriefingViewDuration', (req, res) => {
+  res.json({ success: true, ok: true });
+});
+
+router.get('/user/triggers', (req, res) => {
+  res.json({ triggers: [] });
+});
+
+router.post('/user/triggers', (req, res) => {
+  res.json({ success: true, ok: true });
+});
+
+// App update version check
+router.get('/app/version', (req, res) => {
+  res.json({
+    latestVersionCode: 135,
+    minVersionCode: 100,
+    downloadUrl: '',
+    releaseNotes: 'Up to date'
+  });
+});
+
+// Agent conversation tracking
+router.post('/agent/conversation/start', (req, res) => {
+  res.json({ ok: true, conversationId: req.body?.conversationId || 'conv-1' });
+});
+
+router.post('/agent/message', (req, res) => {
+  res.json({ ok: true });
+});
+
+router.post('/agent/conversation/end', (req, res) => {
+  res.json({ ok: true });
+});
+
+// Memories API
+const inMemoryMemories = [];
+
+router.get('/memories', (req, res) => {
+  res.json({ success: true, memories: inMemoryMemories });
+});
+
+router.post('/memories', (req, res) => {
+  const item = {
+    id: 'mem_' + Date.now(),
+    text: req.body?.text || '',
+    category: req.body?.category || 'general',
+    createdAt: new Date().toISOString()
+  };
+  inMemoryMemories.push(item);
+  res.json({ success: true, memory: item });
+});
+
+router.put('/memories/:id', (req, res) => {
+  res.json({ success: true });
+});
+
+router.delete('/memories/:id', (req, res) => {
+  const idx = inMemoryMemories.findIndex(m => m.id === req.params.id);
+  if (idx !== -1) inMemoryMemories.splice(idx, 1);
+  res.json({ success: true });
+});
+
+// Community / Default Triggers
+router.get('/default-triggers', (req, res) => {
+  res.json([]);
+});
+
+router.get('/community/triggers', (req, res) => {
+  res.json([]);
+});
+
+router.get('/community/triggers/editor-picks', (req, res) => {
+  res.json([]);
+});
+
+router.post('/community/triggers', (req, res) => {
+  res.json({ success: true });
+});
+
+router.post('/community/triggers/download', (req, res) => {
+  res.json({ success: true });
+});
+
+router.post('/community/triggers/like', (req, res) => {
+  res.json({ success: true });
+});
+
+router.get('/leaderboard', (req, res) => {
+  res.json([]);
+});
+
+// Portal (Panda Feed)
+router.get('/portal/feed', (req, res) => {
+  res.json({ messages: [], hasMore: false });
+});
+
+router.post('/portal/post', (req, res) => {
+  res.json({
+    id: 'p_' + Date.now(),
+    uid: 'u1',
+    author: 'User',
+    text: req.body?.text || '',
+    parentId: req.body?.parentId || null,
+    replyCount: 0,
+    upvotes: 0,
+    downvotes: 0,
+    isPro: true,
+    createdAt: new Date().toISOString(),
+    deleted: false,
+    currentUserVote: null
+  });
+});
+
+router.post('/portal/triggerPanda', (req, res) => {
+  res.json({
+    id: 'p_' + Date.now(),
+    uid: 'panda',
+    author: 'Panda',
+    text: 'Task initiated.',
+    parentId: null,
+    replyCount: 0,
+    upvotes: 0,
+    downvotes: 0,
+    isPro: true,
+    createdAt: new Date().toISOString(),
+    deleted: false,
+    currentUserVote: null
+  });
+});
+
+router.post('/portal/markRead', (req, res) => {
+  res.json({ success: true });
+});
+
+router.post('/portal/vote', (req, res) => {
+  res.json({ success: true });
+});
+
+router.delete('/portal/message/:id', (req, res) => {
+  res.json({ success: true });
+});
+
+// Composio and toolkits
+router.post('/composio/analyze-task', (req, res) => {
+  res.json({ route: 'device', confidence: 1.0 });
+});
+
+router.post('/composio/chat', (req, res) => {
+  res.json({ reply: 'Processing task...' });
+});
+
+router.get('/toolkits', (req, res) => {
+  res.json([]);
+});
+
+router.get('/toolkits/:id', (req, res) => {
+  res.json({});
+});
+
+router.get('/connected-accounts', (req, res) => {
+  res.json([]);
+});
+
+router.get('/connected-accounts/:id', (req, res) => {
+  res.json({});
+});
+
+// Past actions & Tasks
+router.get('/pastActions', (req, res) => {
+  res.json({ pastActions: [] });
+});
+
+router.post('/pastActions', (req, res) => {
+  res.json({ success: true });
+});
+
+router.get('/tasks', (req, res) => {
+  res.json({ tasks: [] });
+});
+
+router.post('/tasks', (req, res) => {
+  res.json({ success: true });
+});
+
+// ---------------------------------------------------------------------------
+// Browser agent, health & voice stubs
 // ---------------------------------------------------------------------------
 
 router.get('/health', (req, res) => res.json({ status: 'ok' }));
@@ -231,6 +455,10 @@ router.post('/chat/sync', (req, res) => {
 
 router.get('/tts/voices', (req, res) => {
   res.json({ voices: [{ name: 'alloy', status: 'ok' }] });
+});
+
+router.post('/tts/synthesize', (req, res) => {
+  res.json({ audioContent: null });
 });
 
 router.post('/stt/transcribe', (req, res) => {

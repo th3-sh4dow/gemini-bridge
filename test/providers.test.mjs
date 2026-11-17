@@ -574,3 +574,53 @@ test('browserAgent/generateContent converts REQUIRED mode to ANY', async () => {
   assert.ok(Array.isArray(json.candidates));
   assert.equal(json.noCredits, false);
 });
+
+test('GET /v1/user returns pro+byok subscription status', async () => {
+  const { status, json } = await get('/v1/user');
+  assert.equal(status, 200);
+  assert.equal(json.plan, 'pro+byok');
+  assert.equal(json.isDeleted, false);
+  assert.equal(json.enforcedPlan, 'byok');
+});
+
+test('GET /v1/app/version returns valid update schema', async () => {
+  const { status, json } = await get('/v1/app/version');
+  assert.equal(status, 200);
+  assert.equal(typeof json.latestVersionCode, 'number');
+  assert.equal(typeof json.minVersionCode, 'number');
+});
+
+test('Memories API supports listing and adding memories', async () => {
+  const list1 = await get('/v1/memories');
+  assert.equal(list1.status, 200);
+  assert.equal(list1.json.success, true);
+  assert.ok(Array.isArray(list1.json.memories));
+
+  const add = await post('/v1/memories', { text: 'Test memory note' });
+  assert.equal(add.status, 200);
+  assert.equal(add.json.success, true);
+  assert.equal(add.json.memory.text, 'Test memory note');
+});
+
+test('Portal and Feed API returns valid message structures', async () => {
+  const feed = await get('/v1/portal/feed');
+  assert.equal(feed.status, 200);
+  assert.equal(feed.json.hasMore, false);
+  assert.ok(Array.isArray(feed.json.messages));
+
+  const postRes = await post('/v1/portal/post', { text: 'Hello Panda' });
+  assert.equal(postRes.status, 200);
+  assert.equal(postRes.json.text, 'Hello Panda');
+  assert.equal(postRes.json.isPro, true);
+});
+
+test('Conversation tracking endpoints return ok:true', async () => {
+  const start = await post('/v1/agent/conversation/start', { conversationId: 'c1' });
+  assert.equal(start.status, 200);
+  assert.equal(start.json.ok, true);
+
+  const end = await post('/v1/agent/conversation/end', { conversationId: 'c1' });
+  assert.equal(end.status, 200);
+  assert.equal(end.json.ok, true);
+});
+
