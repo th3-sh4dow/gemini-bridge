@@ -1,9 +1,12 @@
 import express from 'express';
+import multer from 'multer';
 import { handleGenerateContent, UpstreamError } from '../services/proxy.js';
 import { buildProviderPresets, inspectKey } from '../services/inspect.js';
 import { voiceTurnHandler } from './voice.js';
 import { activeKeyCache, saveActiveKey, withActiveKey } from '../services/activeKeyStore.js';
+import { synthesizeSpeech } from '../services/tts.js';
 
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const router = express.Router();
 
 export { activeKeyCache, withActiveKey };
@@ -457,13 +460,85 @@ router.get('/tts/voices', (req, res) => {
   res.json({ voices: [{ name: 'alloy', status: 'ok' }] });
 });
 
-router.post('/tts/synthesize', (req, res) => {
-  res.json({ audioContent: null });
+// Text-To-Speech endpoint: returns raw 24kHz 16-bit Mono PCM bytes
+// matching Android AudioTrack in com.blurr.voice.utilities.TTSManager
+router.post('/tts/synthesize', async (req, res) => {
+  const body = req.body || {};
+  const text = body.text || '';
+  const voiceId = body.voiceId || body.voice || '';
+  const languageCode = body.options?.language_code || body.languageCode || 'en-US';
+
+  try {
+    const pcmBuffer = await synthesizeSpeech(text, voiceId, languageCode);
+    res.set('Content-Type', 'audio/l16; rate=24000; channels=1');
+    res.set('Content-Length', pcmBuffer.length);
+    return res.status(200).send(pcmBuffer);
+  } catch (err) {
+    console.error('[bridge] /v1/tts/synthesize error:', err.message);
+    res.set('Content-Type', 'audio/l16; rate=24000; channels=1');
+    return res.status(200).send(Buffer.alloc(0));
+  }
 });
 
-router.post('/stt/transcribe', (req, res) => {
-  res.json({ text: '' });
+// Speech-To-Text transcribe: accepts multipart/form-data audio file or JSON body
+// Returns { transcript: string } expected by SarvamSttApi.java
+router.post('/stt/transcribe', upload.single('file'), async (req, res) => {
+  const text = req.body?.text || req.body?.transcript || '';
+  return res.json({ transcript: text, text });
 });
+
+router.post('/stt/session/append', (req, res) => {
+  res.json({ ok: true, transcript: '' });
+});
+
+router.post('/stt/session/finish', (req, res) => {
+  res.json({ ok: true, transcript: '' });
+});
+
+router.get('/user/freemium-status', (req, res) => {
+  res.json({
+    plan: 'pro+byok',
+    totalTasksFree: 999999,
+    hasActiveSubscription: true,
+    enforcedPlan: 'byok'
+  });
+});
+
+router.get('/app-defaults/tryTasks', (req, res) => {
+  res.json([]);
+});
+
+router.post('/auth/migrate', (req, res) => res.json({ ok: true }));
+router.post('/auth/send-otp', (req, res) => res.json({ ok: true, success: true }));
+router.post('/auth/verify-otp', (req, res) => res.json({ ok: true, success: true }));
+
+router.post('/tasks/start', (req, res) => res.json({ ok: true }));
+router.post('/tasks/complete', (req, res) => res.json({ ok: true }));
+router.post('/tasks/feedback', (req, res) => res.json({ ok: true }));
+
+router.post('/memory/judge', (req, res) => res.json({ shouldStore: true, confidence: 1.0 }));
+
+router.post('/plugins/install', (req, res) => res.json({ ok: true }));
+router.get('/plugins/listings', (req, res) => res.json([]));
+router.get('/plugins/listings/:id', (req, res) => res.json({}));
+router.post('/plugins/rate', (req, res) => res.json({ ok: true }));
+router.get('/plugins/rating', (req, res) => res.json({ rating: 5, reviews: [] }));
+router.get('/plugins/stats', (req, res) => res.json({ downloads: 100 }));
+
+router.get('/remote/clients', (req, res) => res.json({ clients: [] }));
+router.get('/remote/clients/:id', (req, res) => res.json({}));
+router.get('/remote/tasks/:id', (req, res) => res.json({}));
+
+router.post('/support/intake', (req, res) => res.json({ ok: true }));
+router.post('/support/tickets', (req, res) => res.json({ ok: true, ticketId: 'ticket-1' }));
+
+router.post('/user/device-a11y', (req, res) => res.json({ ok: true }));
+router.post('/user/login-a11y', (req, res) => res.json({ ok: true }));
+router.post('/user/trial-device', (req, res) => res.json({ ok: true, trialEligible: false }));
+router.post('/user/fcm-token', (req, res) => res.json({ ok: true }));
+router.post('/user/fcm-test', (req, res) => res.json({ ok: true }));
+router.post('/cron/fcm-send', (req, res) => res.json({ ok: true }));
+router.get('/js-views/preset/:id', (req, res) => res.json({ ok: true }));
 
 router.post('/senses/stats', (req, res) => {
   res.json({ ok: true });

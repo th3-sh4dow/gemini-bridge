@@ -624,3 +624,27 @@ test('Conversation tracking endpoints return ok:true', async () => {
   assert.equal(end.json.ok, true);
 });
 
+test('POST /v1/tts/synthesize returns binary PCM audio bytes', async () => {
+  const res = await fetch(`http://127.0.0.1:${bridgePort}/v1/tts/synthesize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'Hello', voiceId: 'en-US-Chirp3-HD-Aoede' })
+  });
+  assert.equal(res.status, 200);
+  const buffer = await res.arrayBuffer();
+  assert.ok(buffer.byteLength > 0, 'received PCM audio bytes');
+});
+
+test('POST /v1/stt/transcribe returns transcript schema', async () => {
+  const { status, json } = await post('/v1/stt/transcribe', { text: 'test transcript' });
+  assert.equal(status, 200);
+  assert.equal(json.transcript, 'test transcript');
+});
+
+test('GET /v1/user/freemium-status returns unlocked pro+byok status', async () => {
+  const { status, json } = await get('/v1/user/freemium-status');
+  assert.equal(status, 200);
+  assert.equal(json.plan, 'pro+byok');
+  assert.equal(json.enforcedPlan, 'byok');
+});
+

@@ -11,9 +11,12 @@
     "capture": "bash scripts/capture.sh"
   },
   "dependencies": {
-    "express": "^4.21.0",
     "axios": "^1.7.0",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "cors": "^2.8.5"
+    "express": "^4.21.0",
+    "mpg123-decoder": "^1.0.3",
+    "msedge-tts": "^2.1.1",
+    "multer": "^2.5.0"
   }
 }
