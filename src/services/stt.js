@@ -6,12 +6,13 @@ export async function transcribeAudio(audioBuffer, mimeType, headers = {}) {
     headers['x-provider-api-key'] ||
     headers['x-custom-gemini-key'] ||
     activeKeyCache.apiKey ||
+    activeKeyCache.key ||
     process.env.GEMINI_API_KEY ||
     '';
 
   if (!apiKey && headers['authorization']) {
     const m = headers['authorization'].match(/^Bearer\s+(.+)$/i);
-    if (m && m[1] && m[1] !== 'dummy_token') {
+    if (m && m[1] && m[1] !== 'dummy_token' && m[1] !== 'nexon_local_token' && m[1].length > 15) {
       apiKey = m[1].trim();
     }
   }

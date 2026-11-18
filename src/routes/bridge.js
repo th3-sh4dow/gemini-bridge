@@ -16,7 +16,16 @@ export { activeKeyCache, withActiveKey };
 router.use((req, res, next) => {
   const geminiKey = req.headers['x-custom-gemini-key'];
   const providerKey = req.headers['x-provider-api-key'];
-  const key = providerKey || geminiKey;
+  let key = providerKey || geminiKey;
+  if (!key && req.headers['authorization']) {
+    const m = req.headers['authorization'].match(/^Bearer\s+(.+)$/i);
+    if (m && m[1]) {
+      const candidate = m[1].trim();
+      if (candidate !== 'dummy_token' && candidate !== 'nexon_local_token' && candidate.length > 15) {
+        key = candidate;
+      }
+    }
+  }
   if (key && typeof key === 'string' && key.trim()) {
     saveActiveKey(
       key.trim(),

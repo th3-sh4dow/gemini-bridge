@@ -5,6 +5,8 @@ const CACHE_FILE = process.env.ACTIVE_KEY_PATH || path.resolve(process.cwd(), '.
 const IS_TEST = process.env.NODE_ENV === 'test';
 
 export const activeKeyCache = {
+  get key() { return this.apiKey; },
+  set key(v) { this.apiKey = v; },
   apiKey: process.env.GEMINI_API_KEY || '',
   provider: 'gemini',
   model: 'gemini-3.1-flash-lite'
@@ -40,9 +42,14 @@ export function saveActiveKey(apiKey, provider, model) {
 }
 
 export function withActiveKey(req) {
-  if (!req.headers['x-custom-gemini-key'] && !req.headers['x-provider-api-key'] && activeKeyCache.apiKey) {
-    req.headers['x-provider-api-key'] = activeKeyCache.apiKey;
-    req.headers['x-provider'] = req.headers['x-provider'] || activeKeyCache.provider;
-    req.headers['x-provider-model'] = req.headers['x-provider-model'] || activeKeyCache.model;
+  const effectiveKey = req.headers['x-custom-gemini-key'] || req.headers['x-provider-api-key'] || activeKeyCache.apiKey || activeKeyCache.key;
+  if (!req.headers['x-provider-api-key'] && effectiveKey) {
+    req.headers['x-provider-api-key'] = effectiveKey;
+  }
+  if (!req.headers['x-provider'] && activeKeyCache.provider) {
+    req.headers['x-provider'] = activeKeyCache.provider;
+  }
+  if (!req.headers['x-provider-model'] && activeKeyCache.model) {
+    req.headers['x-provider-model'] = activeKeyCache.model;
   }
 }
