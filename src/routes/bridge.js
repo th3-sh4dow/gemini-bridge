@@ -5,6 +5,7 @@ import { buildProviderPresets, inspectKey } from '../services/inspect.js';
 import { voiceTurnHandler } from './voice.js';
 import { activeKeyCache, saveActiveKey, withActiveKey } from '../services/activeKeyStore.js';
 import { synthesizeSpeech } from '../services/tts.js';
+import { transcribeAudio } from '../services/stt.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const router = express.Router();
@@ -421,20 +422,117 @@ router.post('/composio/chat', (req, res) => {
   return res.json({ reply: "I'm ready to help!" });
 });
 
+const DEFAULT_TOOLKITS = [
+  {
+    slug: 'whatsapp',
+    name: 'WhatsApp',
+    logoUrl: 'https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/whatsapp.png',
+    description: 'Send messages and manage chats on WhatsApp',
+    categories: ['Communication', 'Messaging']
+  },
+  {
+    slug: 'linkedin',
+    name: 'LinkedIn',
+    logoUrl: 'https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/linkedin.png',
+    description: 'Manage LinkedIn posts and network',
+    categories: ['Social', 'Productivity']
+  },
+  {
+    slug: 'googlecontacts',
+    name: 'Google Contacts',
+    logoUrl: 'https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/google-contacts.png',
+    description: 'Access and manage your contacts',
+    categories: ['Productivity']
+  },
+  {
+    slug: 'gmail',
+    name: 'Gmail',
+    logoUrl: 'https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/gmail.png',
+    description: 'Read and send emails via Gmail',
+    categories: ['Email', 'Productivity']
+  },
+  {
+    slug: 'slack',
+    name: 'Slack',
+    logoUrl: 'https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/slack.png',
+    description: 'Send messages and manage channels in Slack',
+    categories: ['Communication', 'Teamwork']
+  },
+  {
+    slug: 'youtube',
+    name: 'YouTube',
+    logoUrl: 'https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/youtube.png',
+    description: 'Search and play videos on YouTube',
+    categories: ['Media', 'Entertainment']
+  },
+  {
+    slug: 'spotify',
+    name: 'Spotify',
+    logoUrl: 'https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/spotify.png',
+    description: 'Stream and control music on Spotify',
+    categories: ['Media', 'Music']
+  }
+];
+
+const DEFAULT_ACCOUNTS = [
+  {
+    id: 'acc_whatsapp',
+    toolkitSlug: 'whatsapp',
+    toolkitName: 'WhatsApp',
+    status: 'ACTIVE',
+    createdAt: '2024-01-01T00:00:00Z',
+    logoUrl: 'https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/whatsapp.png'
+  },
+  {
+    id: 'acc_linkedin',
+    toolkitSlug: 'linkedin',
+    toolkitName: 'LinkedIn',
+    status: 'ACTIVE',
+    createdAt: '2024-01-01T00:00:00Z',
+    logoUrl: 'https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/linkedin.png'
+  },
+  {
+    id: 'acc_googlecontacts',
+    toolkitSlug: 'googlecontacts',
+    toolkitName: 'Google Contacts',
+    status: 'ACTIVE',
+    createdAt: '2024-01-01T00:00:00Z',
+    logoUrl: 'https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/google-contacts.png'
+  },
+  {
+    id: 'acc_gmail',
+    toolkitSlug: 'gmail',
+    toolkitName: 'Gmail',
+    status: 'ACTIVE',
+    createdAt: '2024-01-01T00:00:00Z',
+    logoUrl: 'https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/gmail.png'
+  },
+  {
+    id: 'acc_slack',
+    toolkitSlug: 'slack',
+    toolkitName: 'Slack',
+    status: 'ACTIVE',
+    createdAt: '2024-01-01T00:00:00Z',
+    logoUrl: 'https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/slack.png'
+  }
+];
+
 router.get('/toolkits', (req, res) => {
-  res.json({ toolkits: [] });
+  res.json({ toolkits: DEFAULT_TOOLKITS });
 });
 
 router.get('/toolkits/:id', (req, res) => {
-  res.json({});
+  const item = DEFAULT_TOOLKITS.find(t => t.slug === req.params.id) || DEFAULT_TOOLKITS[0];
+  res.json(item);
 });
 
 router.get('/connected-accounts', (req, res) => {
-  res.json({ accounts: [] });
+  res.json({ accounts: DEFAULT_ACCOUNTS });
 });
 
 router.get('/connected-accounts/:id', (req, res) => {
-  res.json({});
+  const item = DEFAULT_ACCOUNTS.find(a => a.id === req.params.id || a.toolkitSlug === req.params.id) || DEFAULT_ACCOUNTS[0];
+  res.json(item);
 });
 
 // Past actions & Tasks
@@ -489,9 +587,17 @@ router.post('/tts/synthesize', async (req, res) => {
 });
 
 // Speech-To-Text transcribe: accepts multipart/form-data audio file or JSON body
-// Returns { transcript: string } expected by SarvamSttApi.java
+// Returns { transcript: string, text: string } expected by SarvamSttApi.java & SpeechCoordinator
 router.post('/stt/transcribe', upload.single('file'), async (req, res) => {
-  const text = req.body?.text || req.body?.transcript || '';
+  withActiveKey(req);
+  let text = req.body?.text || req.body?.transcript || '';
+  if (!text && req.file && req.file.buffer) {
+    try {
+      text = await transcribeAudio(req.file.buffer, req.file.mimetype, req.headers);
+    } catch (err) {
+      console.error('[bridge] /v1/stt/transcribe error:', err.message);
+    }
+  }
   return res.json({ transcript: text, text });
 });
 
