@@ -657,7 +657,9 @@ router.post('/stt/transcribe', upload.single('file'), async (req, res) => {
   let text = req.body?.text || req.body?.transcript || '';
   if (!text && req.file && req.file.buffer) {
     try {
+      console.log(`[bridge] /v1/stt/transcribe receiving audio: size=${req.file.buffer.length}b, mime=${req.file.mimetype}`);
       text = await transcribeAudio(req.file.buffer, req.file.mimetype, req.headers);
+      console.log(`[bridge] /v1/stt/transcribe transcription result: "${text}"`);
     } catch (err) {
       console.error('[bridge] /v1/stt/transcribe error:', err.message);
     }

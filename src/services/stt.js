@@ -1,13 +1,24 @@
 import axios from 'axios';
-import { activeKeyCache } from './activeKeyStore.js';
+import { activeKeyCache, saveActiveKey } from './activeKeyStore.js';
 
 export async function transcribeAudio(audioBuffer, mimeType, headers = {}) {
-  const apiKey =
+  let apiKey =
     headers['x-provider-api-key'] ||
     headers['x-custom-gemini-key'] ||
     activeKeyCache.apiKey ||
     process.env.GEMINI_API_KEY ||
     '';
+
+  if (!apiKey && headers['authorization']) {
+    const m = headers['authorization'].match(/^Bearer\s+(.+)$/i);
+    if (m && m[1] && m[1] !== 'dummy_token') {
+      apiKey = m[1].trim();
+    }
+  }
+
+  if (apiKey && !activeKeyCache.apiKey) {
+    saveActiveKey(apiKey, headers['x-provider'] || 'gemini');
+  }
 
   if (!audioBuffer || audioBuffer.length === 0) {
     return '';
@@ -52,7 +63,7 @@ export async function transcribeAudio(audioBuffer, mimeType, headers = {}) {
   // 3. If Gemini key or any key that can talk to Gemini:
   if (apiKey) {
     const base64Audio = audioBuffer.toString('base64');
-    const models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-8b'];
+    const models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.5-flash', 'gemini-1.5-flash-8b'];
     for (const model of models) {
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
