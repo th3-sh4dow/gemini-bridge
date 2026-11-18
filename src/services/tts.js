@@ -92,34 +92,69 @@ async function decodeMp3To24kMonoPcm(mp3Buffer) {
 }
 
 /**
- * Synthesize speech via Edge TTS and return raw 24kHz 16-bit Mono PCM.
+ * Synthesize speech via Edge TTS and return raw 24kHz 16-bit Mono PCM with timeout.
  */
 async function synthesizeViaEdge(text, voiceName) {
-  const tts = new MsEdgeTTS();
-  await tts.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-  const { audioStream } = tts.toStream(text);
+  const edgePromise = (async () => {
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+    const { audioStream } = tts.toStream(text);
 
-  const chunks = [];
-  audioStream.on('data', c => chunks.push(c));
+    const chunks = [];
+    audioStream.on('data', c => chunks.push(c));
 
-  await new Promise((resolve, reject) => {
-    audioStream.on('end', resolve);
-    audioStream.on('error', reject);
-  });
+    await new Promise((resolve, reject) => {
+      audioStream.on('end', resolve);
+      audioStream.on('error', reject);
+    });
 
-  const mp3 = Buffer.concat(chunks);
-  return await decodeMp3To24kMonoPcm(mp3);
+    const mp3 = Buffer.concat(chunks);
+    return await decodeMp3To24kMonoPcm(mp3);
+  })();
+
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('Edge TTS timed out after 2500ms')), 2500)
+  );
+
+  return Promise.race([edgePromise, timeoutPromise]);
 }
 
 /**
- * Fallback synthesis via Google Translate TTS.
+ * Fallback synthesis via Google Translate TTS with sentence chunking.
  */
 async function synthesizeViaGoogleTranslate(text, languageCode = 'en') {
   const tl = languageCode.startsWith('hi') ? 'hi' : 'en';
-  const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${tl}&q=${encodeURIComponent(text.slice(0, 200))}`;
-  const response = await axios.get(url, { responseType: 'arraybuffer' });
-  const mp3 = Buffer.from(response.data);
-  return await decodeMp3To24kMonoPcm(mp3);
+  const sentences = text.match(/[^.!?\n]+[.!?\n]*/g) || [text];
+  const chunks = [];
+  let cur = '';
+  for (const s of sentences) {
+    if ((cur + s).length > 180) {
+      if (cur.trim()) chunks.push(cur.trim());
+      cur = s;
+    } else {
+      cur += s;
+    }
+  }
+  if (cur.trim()) chunks.push(cur.trim());
+  if (chunks.length === 0) chunks.push(text.slice(0, 180));
+
+  const pcmBuffers = [];
+  for (const chunk of chunks) {
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${tl}&q=${encodeURIComponent(chunk)}`;
+    const response = await axios.get(url, {
+      responseType: 'arraybuffer',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://translate.google.com/'
+      },
+      timeout: 5000
+    });
+    const mp3 = Buffer.from(response.data);
+    const pcm = await decodeMp3To24kMonoPcm(mp3);
+    pcmBuffers.push(pcm);
+  }
+
+  return Buffer.concat(pcmBuffers);
 }
 
 /**
