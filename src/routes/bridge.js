@@ -410,11 +410,19 @@ router.post('/composio/analyze-task', (req, res) => {
 });
 
 router.post('/composio/chat', (req, res) => {
-  res.json({ reply: 'Processing task...' });
+  const accept = req.headers['accept'] || '';
+  if (accept.includes('text/event-stream') || req.headers['content-type']?.includes('json')) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.write(`event: message\ndata: ${JSON.stringify({ text: "I'm ready to help!" })}\n\n`);
+    res.write(`event: done\ndata: {}\n\n`);
+    return res.end();
+  }
+  return res.json({ reply: "I'm ready to help!" });
 });
 
 router.get('/toolkits', (req, res) => {
-  res.json([]);
+  res.json({ toolkits: [] });
 });
 
 router.get('/toolkits/:id', (req, res) => {
@@ -422,7 +430,7 @@ router.get('/toolkits/:id', (req, res) => {
 });
 
 router.get('/connected-accounts', (req, res) => {
-  res.json([]);
+  res.json({ accounts: [] });
 });
 
 router.get('/connected-accounts/:id', (req, res) => {
