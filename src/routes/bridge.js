@@ -298,7 +298,22 @@ router.post('/agent/conversation/end', (req, res) => {
 });
 
 // Memories API
-const inMemoryMemories = [];
+const inMemoryMemories = [
+  {
+    id: 'mem_1',
+    text: 'Prefers concise and direct responses',
+    category: 'preferences',
+    source: 'voice',
+    createdAt: new Date(Date.now() - 3600000).toISOString()
+  },
+  {
+    id: 'mem_2',
+    text: 'Enjoys lo-fi music playlists when working',
+    category: 'interests',
+    source: 'device',
+    createdAt: new Date(Date.now() - 7200000).toISOString()
+  }
+];
 
 router.get('/memories', (req, res) => {
   res.json({ success: true, memories: inMemoryMemories });
@@ -309,9 +324,10 @@ router.post('/memories', (req, res) => {
     id: 'mem_' + Date.now(),
     text: req.body?.text || '',
     category: req.body?.category || 'general',
+    source: req.body?.source || 'user',
     createdAt: new Date().toISOString()
   };
-  inMemoryMemories.push(item);
+  inMemoryMemories.unshift(item);
   res.json({ success: true, memory: item });
 });
 
@@ -536,16 +552,64 @@ router.get('/connected-accounts/:id', (req, res) => {
 });
 
 // Past actions & Tasks
+const inMemoryPastActions = [
+  {
+    task: "Open YouTube and start a lo-fi mix",
+    status: "completed",
+    success: true,
+    errorMessage: null,
+    startedAt: {
+      _seconds: Math.floor((Date.now() - 300000) / 1000),
+      _nanoseconds: 0
+    },
+    completedAt: {
+      _seconds: Math.floor((Date.now() - 285000) / 1000),
+      _nanoseconds: 0
+    }
+  },
+  {
+    task: "Check morning weather and briefing",
+    status: "completed",
+    success: true,
+    errorMessage: null,
+    startedAt: {
+      _seconds: Math.floor((Date.now() - 3600000) / 1000),
+      _nanoseconds: 0
+    },
+    completedAt: {
+      _seconds: Math.floor((Date.now() - 3590000) / 1000),
+      _nanoseconds: 0
+    }
+  }
+];
+
 router.get('/pastActions', (req, res) => {
-  res.json({ pastActions: [] });
+  // Return top-level JSON array required by n5/w.smali PastActionsApi
+  res.json(inMemoryPastActions);
 });
 
 router.post('/pastActions', (req, res) => {
-  res.json({ success: true });
+  const body = req.body || {};
+  const action = {
+    task: body.task || body.title || 'Completed task',
+    status: body.status || 'completed',
+    success: body.success !== false,
+    errorMessage: body.errorMessage || null,
+    startedAt: {
+      _seconds: body.startedAt?._seconds || Math.floor((Date.now() - 15000) / 1000),
+      _nanoseconds: 0
+    },
+    completedAt: {
+      _seconds: body.completedAt?._seconds || Math.floor(Date.now() / 1000),
+      _nanoseconds: 0
+    }
+  };
+  inMemoryPastActions.unshift(action);
+  res.json({ success: true, action });
 });
 
 router.get('/tasks', (req, res) => {
-  res.json({ tasks: [] });
+  res.json({ tasks: inMemoryPastActions });
 });
 
 router.post('/tasks', (req, res) => {
@@ -572,7 +636,7 @@ router.post('/tts/synthesize', async (req, res) => {
   const body = req.body || {};
   const text = body.text || '';
   const voiceId = body.voiceId || body.voice || '';
-  const languageCode = body.options?.language_code || body.languageCode || 'en-US';
+  const languageCode = body.options?.language_code || body.options?.languageCode || body.languageCode || 'en-US';
 
   try {
     const pcmBuffer = await synthesizeSpeech(text, voiceId, languageCode);
