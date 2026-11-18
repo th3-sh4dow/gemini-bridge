@@ -5,7 +5,7 @@ import { buildProviderPresets, inspectKey } from '../services/inspect.js';
 import { voiceTurnHandler } from './voice.js';
 import { activeKeyCache, saveActiveKey, withActiveKey } from '../services/activeKeyStore.js';
 import { synthesizeSpeech } from '../services/tts.js';
-import { transcribeAudio } from '../services/stt.js';
+import { transcribeAudio, boostPcmVolume, pcmToWav } from '../services/stt.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const router = express.Router();
@@ -659,6 +659,18 @@ router.post('/tts/synthesize', async (req, res) => {
   }
 });
 
+// In-memory buffer for STT streaming sessions from SarvamSttApi
+const sttSessions = new Map();
+
+function cleanupSttSessions() {
+  const now = Date.now();
+  for (const [id, session] of sttSessions.entries()) {
+    if (now - session.created > 120000) {
+      sttSessions.delete(id);
+    }
+  }
+}
+
 // Speech-To-Text transcribe: accepts multipart/form-data audio file or JSON body
 // Returns { transcript: string, text: string } expected by SarvamSttApi.java & SpeechCoordinator
 router.post('/stt/transcribe', upload.single('file'), async (req, res) => {
@@ -676,12 +688,57 @@ router.post('/stt/transcribe', upload.single('file'), async (req, res) => {
   return res.json({ transcript: text, text });
 });
 
-router.post('/stt/session/append', (req, res) => {
-  res.json({ ok: true, transcript: '' });
+// STT session append: receives raw PCM chunk
+router.post('/stt/session/append', express.raw({ type: '*/*', limit: '50mb' }), (req, res) => {
+  const sessionId = req.headers['x-stt-session-id'] || req.query.sessionId || 'default';
+  const chunk = req.body;
+  if (!sttSessions.has(sessionId)) {
+    sttSessions.set(sessionId, {
+      created: Date.now(),
+      chunks: []
+    });
+  }
+  const session = sttSessions.get(sessionId);
+  if (Buffer.isBuffer(chunk) && chunk.length > 0) {
+    session.chunks.push(chunk);
+    console.log(`[bridge] /v1/stt/session/append session=${sessionId} chunk=${chunk.length}b, count=${session.chunks.length}`);
+  }
+  return res.json({ ok: true, transcript: '' });
 });
 
-router.post('/stt/session/finish', (req, res) => {
-  res.json({ ok: true, transcript: '' });
+// STT session finish: assembles PCM, converts to WAV, boosts audio gain, transcribes
+router.post('/stt/session/finish', async (req, res) => {
+  withActiveKey(req);
+  const sessionId = req.headers['x-stt-session-id'] || req.query.sessionId || 'default';
+  console.log(`[bridge] /v1/stt/session/finish session=${sessionId}`);
+
+  const session = sttSessions.get(sessionId);
+  sttSessions.delete(sessionId);
+  cleanupSttSessions();
+
+  if (!session || session.chunks.length === 0) {
+    console.log(`[bridge] /v1/stt/session/finish session=${sessionId} empty or not found`);
+    return res.json({ ok: true, transcript: '', text: '' });
+  }
+
+  const pcmBuffer = Buffer.concat(session.chunks);
+  console.log(`[bridge] /v1/stt/session/finish assembled PCM size=${pcmBuffer.length}b (~${(pcmBuffer.length / 32000).toFixed(2)}s)`);
+
+  if (pcmBuffer.length < 3200) {
+    console.log('[bridge] /v1/stt/session/finish audio too short (<100ms)');
+    return res.json({ ok: true, transcript: '', text: '' });
+  }
+
+  try {
+    const boostedPcm = boostPcmVolume(pcmBuffer);
+    const wavBuffer = pcmToWav(boostedPcm, 16000, 1, 16);
+    const text = await transcribeAudio(wavBuffer, 'audio/wav', req.headers);
+    console.log(`[bridge] /v1/stt/session/finish transcription: "${text}"`);
+    return res.json({ ok: true, transcript: text || '', text: text || '' });
+  } catch (err) {
+    console.error('[bridge] /v1/stt/session/finish error:', err.message);
+    return res.json({ ok: true, transcript: '', text: '' });
+  }
 });
 
 router.get('/user/freemium-status', (req, res) => {

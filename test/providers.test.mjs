@@ -641,6 +641,33 @@ test('POST /v1/stt/transcribe returns transcript schema', async () => {
   assert.equal(json.transcript, 'test transcript');
 });
 
+test('POST /v1/stt/session/append and /finish buffer and complete', async () => {
+  const sessionId = 'test-session-' + Date.now();
+  const chunk = Buffer.alloc(1024, 0x10);
+  const appendResp = await fetch(`http://127.0.0.1:${bridgePort}/v1/stt/session/append`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'X-Stt-Session-Id': sessionId
+    },
+    body: chunk
+  });
+  assert.equal(appendResp.status, 200);
+  const appendJson = await appendResp.json();
+  assert.equal(appendJson.ok, true);
+
+  const finishResp = await fetch(`http://127.0.0.1:${bridgePort}/v1/stt/session/finish`, {
+    method: 'POST',
+    headers: {
+      'X-Stt-Session-Id': sessionId
+    }
+  });
+  assert.equal(finishResp.status, 200);
+  const finishJson = await finishResp.json();
+  assert.equal(finishJson.ok, true);
+  assert.ok(typeof finishJson.transcript === 'string');
+});
+
 test('GET /v1/user/freemium-status returns unlocked pro+byok status', async () => {
   const { status, json } = await get('/v1/user/freemium-status');
   assert.equal(status, 200);
