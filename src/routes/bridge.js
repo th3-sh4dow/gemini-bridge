@@ -694,7 +694,7 @@ router.get('/user/freemium-status', (req, res) => {
 });
 
 router.get('/app-defaults/tryTasks', (req, res) => {
-  res.json([]);
+  res.json({});
 });
 
 router.post('/auth/migrate', (req, res) => res.json({ ok: true }));
